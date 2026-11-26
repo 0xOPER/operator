@@ -1588,4 +1588,17 @@ NEUTERS = [
     ("BK-req-header-clean", BK,
      'if not all(clean_header(k, v) for k, v in headers.items()):',
      'if False:'),
+    # --- the sealed check's export: the candidate's exec bit ---
+    # it rides at all: without it a script the candidate adds isn't executable (K9a)
+    ("CT-exec-bit", CT,
+     'os.chmod(dst, 0o700)',
+     'pass  # the exec bit never rides'),
+    # ...for the owner alone: no group or other bit on candidate code (K9a)
+    ("CT-exec-owner-only", CT,
+     'os.chmod(dst, 0o700)',
+     'os.chmod(dst, 0o755)'),
+    # ...and only where git recorded it: a plain candidate file gains none (K9b)
+    ("CT-exec-bit-755-only", CT,
+     'if new_mode == "100755":',
+     'if new_mode != "160000":'),
 ]

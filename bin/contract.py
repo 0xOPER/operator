@@ -906,7 +906,9 @@ def _apply_candidate_diff(repo, pin, commit, export, allowed_writes, resolved_or
             with open(dst, "wb") as wf:
                 wf.write(blob.stdout)
             if new_mode == "100755":
-                os.chmod(dst, 0o755)
+                # git's exec bit rides for the owner alone: the check jail runs as this
+                # same user, and the export is a 0700 scratch tree nothing else reads
+                os.chmod(dst, 0o700)
 
 
 _RESERVED_GUARD_ENV = frozenset({
@@ -2762,6 +2764,49 @@ deps = ["tests.frozen"]
         check(got_obst, "K8c obstructed parent directory raises Finding instead of raw OSError")
     finally:
         shutil.rmtree(adv_base, ignore_errors=True)
+
+    # K9 the candidate's exec bit rides for the owner alone: a 100755 file lands in the
+    # export executable (the check jail runs as this same user) and no wider, and a
+    # 100644 file the candidate touched gains no exec bit
+    tmp9 = tempfile.mkdtemp(prefix="execbit.")
+    try:
+        r9 = os.path.join(tmp9, "r.git")
+        e9 = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_COMMITTER_NAME="t",
+                  GIT_AUTHOR_EMAIL="t@x", GIT_COMMITTER_EMAIL="t@x")
+        os.makedirs(r9)
+        subprocess.run(["git", "-C", r9, "init", "-q"], capture_output=True, env=e9)
+        os.makedirs(os.path.join(r9, ".git", "info"), exist_ok=True)
+        with open(os.path.join(r9, ".git", "info", "attributes"), "w") as f:
+            f.write(ATTRIBUTES + "\n")
+        for nm in ("tool.sh", "keep.sh"):
+            with open(os.path.join(r9, nm), "w") as f:
+                f.write("#!/bin/sh\nexit 0\n")
+        subprocess.run(["git", "-C", r9, "add", "-A"], capture_output=True, env=e9)
+        subprocess.run(["git", "-C", r9, "commit", "-qm", "base"], capture_output=True, env=e9)
+        pin9 = subprocess.run(["git", "-C", r9, "rev-parse", "HEAD"], capture_output=True,
+                              text=True, env=e9).stdout.strip()
+        os.chmod(os.path.join(r9, "tool.sh"), 0o755)
+        with open(os.path.join(r9, "keep.sh"), "a") as f:
+            f.write("# touched by the candidate\n")
+        subprocess.run(["git", "-C", r9, "add", "-A"], capture_output=True, env=e9)
+        subprocess.run(["git", "-C", r9, "commit", "-qm", "candidate"], capture_output=True, env=e9)
+        cand9 = subprocess.run(["git", "-C", r9, "rev-parse", "HEAD"], capture_output=True,
+                               text=True, env=e9).stdout.strip()
+        x9 = os.path.join(tmp9, "x")
+        os.mkdir(x9)
+        export_commit(r9, pin9, x9)
+        _apply_candidate_diff(r9, pin9, cand9, x9, None, [], "k9")
+        tool9, keep9 = os.path.join(x9, "tool.sh"), os.path.join(x9, "keep.sh")
+        m_tool = os.lstat(tool9).st_mode & 0o777
+        m_keep = os.lstat(keep9).st_mode & 0o777
+        with open(keep9) as f:
+            body9 = f.read()
+        check(m_tool == 0o700 and os.access(tool9, os.X_OK),
+              f"K9a the candidate's exec bit rides for the owner alone: {m_tool:o}")
+        check(m_keep & 0o111 == 0 and "# touched" in body9,
+              f"K9b a touched candidate file with no exec bit gains none: {m_keep:o}")
+    finally:
+        shutil.rmtree(tmp9, ignore_errors=True)
 
     print(f"selftest: OK ({ok[0]} checks)" if ok[0] and not bad[0] else "selftest: FAIL")
     return 0 if ok[0] and not bad[0] else 1
