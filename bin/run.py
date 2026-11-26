@@ -450,8 +450,18 @@ def task_states(prog, rd):
                         try:
                             import review as _rm
                             _h = _rm.latest(rd, tid)
+                            _is_rev = bool(_h and str(_h[1].get("attempt") or "").startswith("rev-"))
+                            _cur_ok, _cur_c = (spawn_mod.egit_ok(
+                                parent, "rev-parse", "--verify",
+                                f"refs/heads/candidate/{tid}")
+                                if _h and not _is_rev else (False, ""))
+                            _is_hum = (bool(_h) and not _is_rev
+                                       and _h[1].get("signed") is True
+                                       and _cur_ok
+                                       and _h[1].get("candidate") == _cur_c.strip()
+                                       and _rm.verify_record(_h[1], rd) is None)
                             if _h and _h[1].get("verdict") in ("red", "changes") \
-                                    and _h[1].get("attempt", "").startswith("rev-"):
+                                    and (_is_rev or _is_hum):
                                 st = "escalated"
                                 detail = (f"the reviewer verdicted "
                                           f"{_h[1]['verdict']}: "
@@ -1617,13 +1627,22 @@ def _drive(prog, run_name, rd, tasks, adapters):
         hit = review_mod.latest(rd, t["task"])
         if not hit or not hit[1].get("verdict"):
             continue
-        # only an ADAPTER verdict drives here: a human verdict's record names
-        # no attempt (and its ask is the signature itself -- one escalation,
-        # never one per tick)
-        if not str(hit[1].get("attempt") or "").startswith("rev-"):
+        is_adapter = str(hit[1].get("attempt") or "").startswith("rev-")
+        cur_ok, cur_c = (spawn_mod.egit_ok(
+            parent, "rev-parse", "--verify",
+            f"refs/heads/candidate/{t['task']}")
+            if not is_adapter else (False, ""))
+        is_human = (not is_adapter
+                    and hit[1].get("signed") is True
+                    and cur_ok
+                    and hit[1].get("candidate") == cur_c.strip()
+                    and review_mod.verify_record(hit[1], rd) is None)
+        if not (is_adapter or is_human):
             continue
         v = hit[1]["verdict"]
         try:
+            w_aid = latest_attempt(rd, t["seat"], t["task"])
+            ev_aid = hit[1].get("attempt") or w_aid
             if v == "green":
                 r = spawn_mod._promote(parent, t["task"])
                 if str(r) == "promoted":
@@ -1631,19 +1650,18 @@ def _drive(prog, run_name, rd, tasks, adapters):
                     # task_states reads), never the record's filename -- the
                     # first spelling wrote to attempts/<record-file>/ and
                     # crashed the tick after the promote had already CAS'd
-                    w_aid = latest_attempt(rd, t["seat"], t["task"])
                     if w_aid:
                         with open(os.path.join(rd, "attempts", w_aid,
                                                "promoted"), "w",
                                   encoding="utf-8") as f:
                             f.write(t["task"] + "\n")
                     _auto_resolve_on_promote(rd, t["task"])
-                log_event(rd, "promote", attempt=hit[1].get("attempt"),
+                log_event(rd, "promote", attempt=ev_aid,
                           task=t["task"], result=str(r))
-                drove.append({"attempt": hit[1].get("attempt"), "task": t["task"],
+                drove.append({"attempt": ev_aid, "task": t["task"],
                               "result": str(r)})
             else:
-                log_event(rd, "escalate", attempt=hit[1].get("attempt"),
+                log_event(rd, "escalate", attempt=ev_aid,
                           task=t["task"],
                           detail=f"the reviewer verdicted {v}")
                 escalate_file(rd, "review_red" if v == "red" else "needs_input",
@@ -1815,6 +1833,17 @@ def _drive(prog, run_name, rd, tasks, adapters):
             # the reviewer: an adapter seat verdicts in its own turn; a human
             # seat's verdict waits (the promote gate refuses until it comes)
             who = review_mod.reviewer_of(prog, task)
+            if who and (seats.get(who) or {}).get("human") is True:
+                settle(rd, prog)
+                pack_p = review_mod.pack(adir)
+                log_event(rd, "review-wait", attempt=aid, task=task, reviewer=who)
+                escalate_file(rd, "needs_input",
+                              f"attempt {aid} awaits {who}'s review verdict on {task}",
+                              f"inspect {pack_p}, then review.py verdict {run_name} "
+                              f"{task} --by {who} --green|--red|--changes --key K "
+                              f"--attempt {adir}")
+                drove.append({"attempt": aid, "task": task, "result": "reviewing"})
+                continue
             verdict_v = "green"
             if who and (seats.get(who) or {}).get("human") is not True:
                 # the worker's turn is done and its fate sealed: settle its
@@ -4390,6 +4419,59 @@ def first_level():
               and am_ch.get("pre_review_saves") == 1
               and not live_escs_ch and len(res_escs_ch) == 1,
               f"FL9 3-stage chained DAG recovers stage2 autonomously and finishes clean: rc={rc_ch} am={am_ch} live_escs={live_escs_ch}")
+        # FL10 (F1 + H7) human-reviewed row parks at reviewing with one escalation,
+        # ignores extra ticks without re-escalating, and promotes on signed green verdict
+        with open(sf, "w") as f:
+            f.write(f'owner@fixture namespaces="operator-ruling,operator-review" '
+                    f'{open(k + ".pub").read().strip()}\n')
+        os.chmod(sf, 0o600)
+        team_f1 = ('schema = 1\nname = "tf1"\nmax_parallel = 1\n'
+                   '[seat.w]\nrole = "roles/w.md"\nadapter = "stub"\nwrite = ["src/**"]\n'
+                   '[seat.w.budget]\nusd = 4.0\n'
+                   '[seat.hrev]\nhuman = true\n')
+        ct_f1 = ('schema = 2\n[[row]]\nid = "impl"\nstage = "s"\ndesc = "d"\n'
+                 'kind = "run"\nseat = "w"\nreviewer = "hrev"\n'
+                 'cmd = "test -f src/hum.py"\n')
+        prog_f1 = spawn_mod._program(home, "pf1", team_body=team_f1, contract_body=ct_f1)
+        with open(os.path.join(prog_f1, "roles", "w.md"), "w") as f:
+            f.write("You are seat w.\n")
+        os.makedirs(os.path.join(prog_f1, "plans"), exist_ok=True)
+        with open(os.path.join(prog_f1, "plans", "impl.json"), "w") as f:
+            _json.dump([{"do": "write", "path": "src/hum.py", "body": "ok = True\n"},
+                        {"do": "report", "json": {"summary": "implemented hum.py"}},
+                        {"do": "cost", "usd": 0.01}], f)
+        r_f1_sign = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "bin", "ruling.py"), "sign", prog_f1,
+             "--kind", "arm", "--waive", "budget=advisory", "--key", k],
+            capture_output=True, text=True, env=dict(os.environ))
+        check(r_f1_sign.returncode == 0, f"FL10 prog_f1 signs: {r_f1_sign.stderr[:80]}")
+        cmd_start(prog_f1, "rf1", "attended")
+        rd_f1 = run_dir_of("rf1")
+        out_f1_1 = cmd_tick(prog_f1, "rf1")
+        t_f1_1 = [t for t in out_f1_1["tasks"] if t["task"] == "impl"][0]
+        escs_f1_1 = [fn for fn in os.listdir(os.path.join(rd_f1, "escalations"))
+                     if fn.endswith(".md")] if os.path.isdir(os.path.join(rd_f1, "escalations")) else []
+        check(t_f1_1["state"] == "reviewing" and len(escs_f1_1) == 1,
+              f"FL10a human-reviewed row parks at reviewing with 1 escalation: {t_f1_1} escs={escs_f1_1}")
+        out_f1_idle = cmd_tick(prog_f1, "rf1")
+        escs_f1_idle = [fn for fn in os.listdir(os.path.join(rd_f1, "escalations"))
+                        if fn.endswith(".md")]
+        check(out_f1_idle["dispatched"] == [] and len(escs_f1_idle) == 1,
+              f"FL10b idle tick while reviewing adds no duplicate escalation: {escs_f1_idle}")
+        r_f1_v = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "bin", "review.py"), "verdict",
+             "rf1", "impl", "--by", "hrev", "--green", "--key", k],
+            capture_output=True, text=True, env=dict(os.environ))
+        check(r_f1_v.returncode == 0, f"FL10c human verdict signs against rendered pack: {r_f1_v.stderr[:120]}")
+        out_f1_2 = cmd_tick(prog_f1, "rf1")
+        escs_f1_after = [fn for fn in os.listdir(os.path.join(rd_f1, "escalations"))
+                         if fn.endswith(".md")]
+        check(out_f1_2["state"] == "done"
+              and all(t["state"] == "passed" for t in out_f1_2["tasks"])
+              and not escs_f1_after
+              and spawn_mod.egit(os.path.join(rd_f1, "parent"), "show",
+                                 "integration/R:src/hum.py").strip() == "ok = True",
+              f"FL10d signed green human verdict promotes candidate and finishes run: {out_f1_2}")
     finally:
         if old_home is None:
             os.environ.pop("OPERATOR_HOME", None)

@@ -377,6 +377,15 @@ def pack(attempt):
 # --- the verdict -------------------------------------------------------------------------
 
 
+def _pack_candidate(pack_path):
+    try:
+        txt = _unfenced_text(open(pack_path, encoding="utf-8", errors="replace").read())
+    except OSError:
+        return None
+    m = re.search(r"^candidate ([0-9a-f]{40})$", txt, flags=re.M)
+    return m.group(1) if m else None
+
+
 def verdict(run_name, task, seat, verdict, note_file, key, attempt_dir):
     if verdict not in VERDICTS:
         raise Refused(f"the verdict is one of {' '.join(VERDICTS)}")
@@ -387,21 +396,53 @@ def verdict(run_name, task, seat, verdict, note_file, key, attempt_dir):
     if cand.returncode != 0:
         raise Refused(f"no candidate for task {task!r}; a verdict reviews a candidate")
     cand = cand.stdout.strip()
+    exp_cand = None
     if attempt_dir:
-        prog = spawn_mod.meta_load(attempt_dir).get("prog")
+        am = spawn_mod.meta_load(attempt_dir)
+        if am.get("task") != task:
+            raise Refused(f"--attempt belongs to task {am.get('task')!r}, not {task!r}")
+        prog = am.get("prog")
+        pack_p = os.path.join(attempt_dir, "review", "pack.md")
+        exp_cand = _pack_candidate(pack_p) if os.path.isfile(pack_p) else None
+        if not exp_cand:
+            exp_cand = am.get("candidate")
+        if not exp_cand:
+            cpath = os.path.join(attempt_dir, "contract.json")
+            if os.path.isfile(cpath):
+                try:
+                    exp_cand = json.load(open(cpath, encoding="utf-8")).get("candidate")
+                except (ValueError, OSError):
+                    pass
     else:
+        matched_adir = None
         for n in sorted(os.listdir(os.path.join(rd, "attempts")), reverse=True):
+            if n.startswith(".") or n.startswith("rev-"):
+                continue
             m = os.path.join(rd, "attempts", n, "attempt.json")
             if os.path.isfile(m):
                 try:
                     d = json.load(open(m, encoding="utf-8"))
                 except (ValueError, OSError):
                     continue
-                if d.get("task") == task and d.get("prog"):
-                    prog = d.get("prog")
-                    break
+                if d.get("task") == task and not d.get("review_turn"):
+                    if not prog and d.get("prog"):
+                        prog = d.get("prog")
+                    if d.get("candidate") == cand and matched_adir is None:
+                        matched_adir = os.path.join(rd, "attempts", n)
         if not prog:
             prog = _prog_of(rd, task)
+        pack_p = os.path.join(matched_adir, "review", "pack.md") if matched_adir else None
+        if not pack_p or not os.path.isfile(pack_p):
+            raise Refused(
+                f"no review pack rendered for current candidate {cand[:12]} on task "
+                f"{task!r}; run review.py pack <attempt> first or pass --attempt"
+            )
+        exp_cand = _pack_candidate(pack_p)
+    if exp_cand != cand:
+        raise Refused(
+            f"candidate for task {task!r} moved from {str(exp_cand)[:12]} to "
+            f"{cand[:12]}; re-pack and review the current candidate"
+        )
     who = reviewer_of(prog, task)
     if who is None:
         raise Refused(f"task {task!r} has no reviewer; nothing to verdict")
@@ -1076,6 +1117,39 @@ def selftest():
         verdict("w1", "t1", "owner", "green", None, k, adir2)
         check(spawn_mod.promote(parent, "t1") == "promoted",
               "H the fresh green delivers")
+        # H2 (H7) human verdict binds to the reviewed pack / --attempt sha and
+        # refuses when refs/heads/candidate/<task> moved underneath the reviewer
+        adir_h7a = spawn_mod.build_attempt(rd, "w", ["src/**"], "integration/R",
+                                           "a-h7a", "t1", prog, ["w", "owner"])
+        with open(os.path.join(adir_h7a, "repo", "src", "a.py"), "w") as f:
+            f.write("v=71\n")
+        spawn_mod._seal_room(adir_h7a)
+        spawn_mod.import_gate(adir_h7a)
+        spawn_mod.candidate(adir_h7a, "t1")
+        pack(adir_h7a)
+        adir_h7b = spawn_mod.build_attempt(rd, "w", ["src/**"], "integration/R",
+                                           "a-h7b", "t1", prog, ["w", "owner"])
+        with open(os.path.join(adir_h7b, "repo", "src", "a.py"), "w") as f:
+            f.write("v=72\n")
+        spawn_mod._seal_room(adir_h7b)
+        spawn_mod.import_gate(adir_h7b)
+        spawn_mod.candidate(adir_h7b, "t1")
+        try:
+            verdict("w1", "t1", "owner", "green", None, k, adir_h7a)
+            check(False, "H2a --attempt naming stale candidate refuses")
+        except Refused as e:
+            check("moved" in str(e), f"H2a stale --attempt refusal names move: {e}")
+        try:
+            verdict("w1", "t1", "owner", "green", None, k, None)
+            check(False, "H2b verdict without --attempt refuses when current candidate unpacked")
+        except Refused as e:
+            check("no review pack" in str(e),
+                  f"H2b unpacked current candidate refuses: {e}")
+        pack(adir_h7b)
+        verdict("w1", "t1", "owner", "green", None, k, None)
+        check(spawn_mod.promote(parent, "t1") == "promoted"
+              and spawn_mod.egit(parent, "show", "integration/R:src/a.py").strip() == "v=72",
+              "H2c packed current candidate signs and promotes without --attempt")
         # J the round's fired proof: a HAND-WRITTEN green record --
         # "signed": true, the current candidate, a future timestamp, no key --
         # must not deliver (the sig verifies or the record certifies nothing)
@@ -1582,4 +1656,11 @@ def main(argv):
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv))
+    try:
+        sys.exit(main(sys.argv))
+    except (Refused, spawn_mod.Refused) as _e:
+        print(f"review: REFUSED: {_e}", file=sys.stderr)
+        sys.exit(1)
+    except (Void, spawn_mod.Void) as _e:
+        print(f"review: VOID: {_e}", file=sys.stderr)
+        sys.exit(2)

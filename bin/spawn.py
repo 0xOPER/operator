@@ -2337,6 +2337,7 @@ def _candidate(attempt, task):
     ok_u, u_err = egit_ok(parent, "update-ref", f"refs/heads/candidate/{task}", c)
     if not ok_u:
         raise Void(f"update-ref candidate/{task} failed: {u_err[:120]}")
+    _dump_meta(attempt, {**meta, "candidate": c})
     return "candidate"
 
 
