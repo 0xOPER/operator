@@ -1,6 +1,7 @@
 # Default-deny: a top-level path is tracked only if it's named here, and a file only if keep-list names it.
 /*
 !/.github/
+!/.githooks/
 !/assets/
 !/bin/
 !/docs/

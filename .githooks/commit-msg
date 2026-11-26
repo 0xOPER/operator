@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# commit-msg -- reject Co-authored-by and AI/tool attribution trailers.
+set -uo pipefail
+LC_ALL=C
+export LC_ALL
+exec </dev/null
+
+msg_file="${1:-}"
+if [ -z "$msg_file" ] || [ ! -f "$msg_file" ]; then
+  echo "commit-msg: VOID, missing commit message file argument" >&2
+  exit 2
+fi
+
+msg=$(grep -vE '^\s*#' "$msg_file" || true)
+if printf '%s\n' "$msg" | grep -iE '^\s*co-authored-by:|^\s*[a-z-]+-by:.*claude|(made|generated) (with|by) \[?claude|noreply@anthropic\.com' >/dev/null; then
+  echo "commit-msg: REFUSED -- commit message contains a Co-authored-by or tool-attribution trailer:" >&2
+  printf '%s\n' "$msg" | grep -niE '^\s*co-authored-by:|^\s*[a-z-]+-by:.*claude|(made|generated) (with|by) \[?claude|noreply@anthropic\.com' >&2
+  echo "  fix: remove Co-authored-by and tool-attribution trailers from the commit message (enforced by .github/workflows/ci.yml)" >&2
+  exit 1
+fi
+
+exit 0

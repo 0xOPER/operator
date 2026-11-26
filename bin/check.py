@@ -137,6 +137,28 @@ def run_checks():
     n = len([f for f in os.listdir(adapters) if f.endswith(".toml")]) if os.path.isdir(adapters) else 0
     add("adapters", True, f"{n} manifest(s) in {adapters}", "the stub ships one",
         "none needed until a seat names an adapter; the stub manifest ships with the core")
+
+    git_root = os.environ.get("OPERATOR_GIT_ROOT") or ROOT
+    if os.path.exists(os.path.join(git_root, ".git")) and shutil.which("git"):
+        try:
+            rh = subprocess.run(["git", "-C", git_root, "config", "--get", "core.hooksPath"],
+                                capture_output=True, text=True, timeout=10,
+                                stdin=subprocess.DEVNULL)
+            hp = rh.stdout.strip().rstrip("/")
+        except subprocess.TimeoutExpired:
+            hp = "hung"
+        hooks_abs = os.path.abspath(os.path.join(git_root, ".githooks")).rstrip("/")
+        hooks_exec = all(
+            os.access(os.path.join(git_root, ".githooks", h), os.X_OK)
+            for h in ("pre-commit", "commit-msg", "pre-push")
+        )
+        hooks_ok = hp in (".githooks", hooks_abs) and hooks_exec
+        found_h = f"{hp} (active)" if hooks_ok else (hp or "not installed")
+        add("git-hooks", hooks_ok, found_h, "core.hooksPath = .githooks",
+            "run scripts/setup-hooks.sh to install pre-commit, commit-msg and pre-push hooks")
+    else:
+        add("git-hooks", True, "not a git checkout", "-",
+            "none needed outside a git clone (run scripts/setup-hooks.sh inside a clone)")
     return checks
 
 
@@ -213,7 +235,7 @@ def selftest():
                 check(bool(c["fix"]) and bool(c["need"]), f"B {c['check']} names its fix")
         names = {c["check"] for c in doc["checks"]}
         check({"git", "bubblewrap", "openssh", "python", "venv", "ensurepip",
-               "operator-home", "signers", "adapters"} <= names, f"B the surface: {sorted(names)}")
+               "operator-home", "signers", "adapters", "git-hooks"} <= names, f"B the surface: {sorted(names)}")
 
         # C a stripped PATH makes the binaries missing, each with its fix
         empty = os.path.join(base, "emptybin")
@@ -293,6 +315,31 @@ def selftest():
         with open(sf, "w") as f:
             f.write(f'owner@fixture namespaces="operator-ruling" {open(k + ".pub").read().strip()}\n')
         os.chmod(sf, 0o600)
+
+        # I git-hooks reports uninstalled with scripts/setup-hooks.sh fix, then active once installed
+        hrepo = os.path.join(base, "hookrepo")
+        os.makedirs(os.path.join(hrepo, ".githooks"))
+        subprocess.run(["git", "-C", hrepo, "init", "-q"], capture_output=True, stdin=subprocess.DEVNULL)
+        for hname in ("pre-commit", "commit-msg", "pre-push"):
+            hp_f = os.path.join(hrepo, ".githooks", hname)
+            with open(hp_f, "w") as f:
+                f.write("#!/bin/sh\nexit 0\n")
+            os.chmod(hp_f, 0o700)
+        env_h = {**os.environ, "OPERATOR_GIT_ROOT": hrepo}
+        r_un = subprocess.run([sys.executable, os.path.abspath(__file__), "--json"],
+                              capture_output=True, text=True, env=env_h, timeout=60,
+                              stdin=subprocess.DEVNULL)
+        gh_un = {c["check"]: c for c in json.loads(r_un.stdout)["checks"]}["git-hooks"]
+        check(gh_un["ok"] is False and "scripts/setup-hooks.sh" in gh_un["fix"],
+              f"I uninstalled hooks name setup-hooks.sh: {gh_un}")
+        subprocess.run(["git", "-C", hrepo, "config", "core.hooksPath", ".githooks"],
+                       capture_output=True, stdin=subprocess.DEVNULL)
+        r_in = subprocess.run([sys.executable, os.path.abspath(__file__), "--json"],
+                              capture_output=True, text=True, env=env_h, timeout=60,
+                              stdin=subprocess.DEVNULL)
+        gh_in = {c["check"]: c for c in json.loads(r_in.stdout)["checks"]}["git-hooks"]
+        check(gh_in["ok"] is True and ".githooks" in gh_in["found"],
+              f"I installed hooks report active: {gh_in}")
 
         print(f"selftest: OK ({ok[0]} checks)" if ok[0] and not bad[0] else "selftest: FAIL")
         return 0 if ok[0] and not bad[0] else 1

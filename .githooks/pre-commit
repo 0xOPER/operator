@@ -1,0 +1,239 @@
+#!/usr/bin/env bash
+# pre-commit -- fast, staged-only checks (a few seconds).
+# Heavy suites belong in pre-push and CI: keeping pre-commit heavy trains
+# contributors to reach for --no-verify, which skips the safety gates too.
+set -uo pipefail
+LC_ALL=C
+export LC_ALL
+exec </dev/null
+
+if [ "${SETUP_HOOKS_STRICT_PATH:-0}" != "1" ]; then
+  PATH="$PATH:/opt/homebrew/bin:/usr/local/bin:${HOME:-/nonexistent}/.local/bin"
+  export PATH
+fi
+
+run_bounded() {
+  local secs="$1"
+  shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout -k 3 "$secs" "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout -k 3 "$secs" "$@"
+  else
+    python3 -I -c '
+import subprocess, sys
+try:
+    r = subprocess.run(sys.argv[2:], timeout=int(sys.argv[1]))
+    sys.exit(r.returncode)
+except subprocess.TimeoutExpired:
+    sys.exit(124)
+' "$secs" "$@"
+  fi
+}
+
+ROOT=$(run_bounded 5 git rev-parse --show-toplevel 2>/dev/null) || {
+  echo "pre-commit: VOID, not inside a git work tree" >&2
+  exit 2
+}
+cd "$ROOT" || exit 2
+
+WANT_ID='OPERATOR project <351411109+0xOPER@users.noreply.github.com>'
+author_raw=$(run_bounded 5 git var GIT_AUTHOR_IDENT 2>/dev/null || true)
+committer_raw=$(run_bounded 5 git var GIT_COMMITTER_IDENT 2>/dev/null || true)
+author_id=$(printf '%s\n' "$author_raw" | sed -E 's/ [0-9]+ [-+][0-9]{4}$//')
+committer_id=$(printf '%s\n' "$committer_raw" | sed -E 's/ [0-9]+ [-+][0-9]{4}$//')
+if [ "$author_id" != "$WANT_ID" ] || [ "$committer_id" != "$WANT_ID" ]; then
+  echo "pre-commit: REFUSED -- commit identity must be '$WANT_ID'" >&2
+  echo "  found author:    $author_id" >&2
+  echo "  found committer: $committer_id" >&2
+  echo "  fix: run 'scripts/setup-hooks.sh --configure-identity' (and unset GIT_AUTHOR_*/GIT_COMMITTER_* env overrides if set)" >&2
+  exit 1
+fi
+
+gpg_cfg=$(run_bounded 5 git config --bool commit.gpgsign 2>/dev/null || true)
+if [ "$gpg_cfg" = "true" ]; then
+  echo "pre-commit: REFUSED -- commit.gpgsign is true, and CI forbids signed commits (gpgsig)" >&2
+  echo "  fix: run 'git config commit.gpgsign false'" >&2
+  exit 1
+fi
+
+links=$(run_bounded 5 git ls-files --stage | awk '$1=="120000" || $1=="160000" {print $4}')
+if [ -n "$links" ]; then
+  echo "pre-commit: REFUSED -- staged symlink or gitlink detected (forbidden by CI):" >&2
+  printf '  %s\n' "$links" >&2
+  echo "  fix: run 'git rm --cached <path>' and replace it with a regular file" >&2
+  exit 1
+fi
+
+if ! run_bounded 5 git cat-file -e :keep-list 2>/dev/null; then
+  echo "pre-commit: REFUSED -- keep-list is missing from the index" >&2
+  echo "  fix: restore keep-list and run 'git add keep-list'" >&2
+  exit 1
+fi
+
+TMP_DIR=$(mktemp -d) || exit 2
+trap 'rm -rf "${TMP_DIR:?}"' EXIT
+
+run_bounded 5 git ls-files | LC_ALL=C sort > "$TMP_DIR/idx.sorted"
+run_bounded 5 git show :keep-list > "$TMP_DIR/kl.raw"
+LC_ALL=C sort -u "$TMP_DIR/kl.raw" > "$TMP_DIR/kl.sorted"
+if ! cmp -s "$TMP_DIR/kl.raw" "$TMP_DIR/kl.sorted"; then
+  echo "pre-commit: REFUSED -- keep-list is not strictly LC_ALL=C sorted and duplicate-free" >&2
+  echo "  fix: run 'LC_ALL=C sort -u -o keep-list keep-list && git add keep-list'" >&2
+  exit 1
+fi
+if ! diff -u "$TMP_DIR/idx.sorted" "$TMP_DIR/kl.sorted" > "$TMP_DIR/kl.diff"; then
+  echo "pre-commit: REFUSED -- tracked index files do not match staged keep-list:" >&2
+  cat "$TMP_DIR/kl.diff" >&2
+  echo "  fix: add/remove the path in keep-list, run 'LC_ALL=C sort -u -o keep-list keep-list', then 'git add keep-list'" >&2
+  exit 1
+fi
+
+staged=()
+while IFS= read -r -d '' f; do
+  [ -n "$f" ] && staged+=("$f")
+done < <(run_bounded 5 git diff --cached --name-only -z --diff-filter=ACMR)
+
+if [ "${#staged[@]}" -eq 0 ]; then
+  exit 0
+fi
+
+TMP_STAGE="$TMP_DIR/stage"
+TMP_HEAD="$TMP_DIR/head"
+mkdir -p "$TMP_STAGE" "$TMP_HEAD"
+printf '%s\0' "${staged[@]}" | run_bounded 10 git checkout-index --prefix="$TMP_STAGE/" -f -z --stdin || {
+  echo "pre-commit: REFUSED -- failed to materialize staged files from index" >&2
+  exit 1
+}
+
+if [ -f "$ROOT/scripts/release-lint.py" ]; then
+  rl_args=(--root "$TMP_STAGE")
+  tb="${OPERATOR_TIER_B:-${HOME:-/nonexistent}/.config/operator-ceremony/tier-b.tsv}"
+  if [ -f "$tb" ]; then
+    rl_args+=(--tier-b "$tb")
+  fi
+  if ! rl_out=$(run_bounded 20 python3 -I "$ROOT/scripts/release-lint.py" "${rl_args[@]}" 2>&1); then
+    echo "pre-commit: REFUSED -- release-lint failed on staged files:" >&2
+    printf '%s\n' "$rl_out" >&2
+    echo "  fix: remove private identifiers, home paths, binary bytes, or credential-shaped filenames from staged files" >&2
+    exit 1
+  fi
+fi
+
+sh_files=()
+py_files=()
+svg_files=()
+for f in "${staged[@]}"; do
+  p="$TMP_STAGE/$f"
+  [ -f "$p" ] || continue
+  first=$(head -n 1 "$p" 2>/dev/null || true)
+  case "$f" in
+    *.sh|.githooks/*|bin/lib/paths) sh_files+=("$f") ;;
+    *)
+      if printf '%s\n' "$first" | grep -qE '^#!.*(ba)?sh'; then
+        sh_files+=("$f")
+      fi
+      ;;
+  esac
+  case "$f" in
+    *.py) py_files+=("$f") ;;
+    *)
+      if printf '%s\n' "$first" | grep -qE '^#!.*python'; then
+        py_files+=("$f")
+      fi
+      ;;
+  esac
+  case "$f" in
+    *.svg) svg_files+=("$f") ;;
+  esac
+done
+
+if [ "${#sh_files[@]}" -gt 0 ]; then
+  for f in "${sh_files[@]}"; do
+    if ! err=$(run_bounded 10 bash -n "$TMP_STAGE/$f" 2>&1); then
+      echo "pre-commit: REFUSED -- shell syntax error in staged '$f':" >&2
+      printf '%s\n' "$err" >&2
+      echo "  fix: repair shell syntax in '$f' and run 'git add $f'" >&2
+      exit 1
+    fi
+  done
+  if command -v shellcheck >/dev/null 2>&1; then
+    for f in "${sh_files[@]}"; do
+      sc_new_out=$(run_bounded 15 shellcheck -x -f gcc "$TMP_STAGE/$f" 2>/dev/null || true)
+      sc_new=$(printf '%s\n' "$sc_new_out" | grep -cE '^[^ ]+:[0-9]+:[0-9]+:' || true)
+      sc_old=0
+      if run_bounded 5 git cat-file -e "HEAD:$f" 2>/dev/null; then
+        mkdir -p "$TMP_HEAD/$(dirname "$f")"
+        run_bounded 5 git show "HEAD:$f" > "$TMP_HEAD/$f"
+        sc_old_out=$(run_bounded 15 shellcheck -x -f gcc "$TMP_HEAD/$f" 2>/dev/null || true)
+        sc_old=$(printf '%s\n' "$sc_old_out" | grep -cE '^[^ ]+:[0-9]+:[0-9]+:' || true)
+      fi
+      if [ "$sc_new" -gt "$sc_old" ]; then
+        echo "pre-commit: REFUSED -- shellcheck findings rose in '$f' ($sc_old -> $sc_new):" >&2
+        printf '%s\n' "$sc_new_out" >&2
+        echo "  fix: resolve the new shellcheck finding(s) in '$f' and run 'git add $f'" >&2
+        exit 1
+      fi
+    done
+  else
+    echo "pre-commit: note: shellcheck not installed; skipping staged shellcheck (CI runs shellcheck 0.10.0.1)" >&2
+  fi
+fi
+
+if [ "${#py_files[@]}" -gt 0 ]; then
+  py_paths=()
+  for f in "${py_files[@]}"; do
+    py_paths+=("$TMP_STAGE/$f")
+  done
+  if ! err=$(run_bounded 15 python3 -I -c '
+import ast, sys
+for p in sys.argv[1:]:
+    with open(p, "rb") as fh:
+        ast.parse(fh.read(), filename=p)
+' "${py_paths[@]}" 2>&1); then
+    echo "pre-commit: REFUSED -- Python syntax error in staged file:" >&2
+    printf '%s\n' "$err" >&2
+    echo "  fix: repair the Python syntax error above and re-stage the file" >&2
+    exit 1
+  fi
+  if command -v ruff >/dev/null 2>&1; then
+    for f in "${py_files[@]}"; do
+      rf_new_out=$(run_bounded 15 ruff check --no-cache --output-format=concise "$TMP_STAGE/$f" 2>/dev/null || true)
+      rf_new=$(printf '%s\n' "$rf_new_out" | grep -cE '^[^ ]+:[0-9]+:[0-9]+:' || true)
+      rf_old=0
+      if run_bounded 5 git cat-file -e "HEAD:$f" 2>/dev/null; then
+        mkdir -p "$TMP_HEAD/$(dirname "$f")"
+        run_bounded 5 git show "HEAD:$f" > "$TMP_HEAD/$f"
+        rf_old_out=$(run_bounded 15 ruff check --no-cache --output-format=concise "$TMP_HEAD/$f" 2>/dev/null || true)
+        rf_old=$(printf '%s\n' "$rf_old_out" | grep -cE '^[^ ]+:[0-9]+:[0-9]+:' || true)
+      fi
+      if [ "$rf_new" -gt "$rf_old" ]; then
+        echo "pre-commit: REFUSED -- ruff findings rose in '$f' ($rf_old -> $rf_new):" >&2
+        printf '%s\n' "$rf_new_out" >&2
+        echo "  fix: resolve the new ruff finding(s) in '$f' and run 'git add $f'" >&2
+        exit 1
+      fi
+    done
+  else
+    echo "pre-commit: note: ruff not installed; skipping staged ruff check (CI runs ruff 0.14.0)" >&2
+  fi
+fi
+
+if [ "${#svg_files[@]}" -gt 0 ]; then
+  svg_paths=()
+  for f in "${svg_files[@]}"; do
+    svg_paths+=("$TMP_STAGE/$f")
+  done
+  if ! err=$(run_bounded 10 python3 -I -c '
+import sys, xml.etree.ElementTree as ET
+for p in sys.argv[1:]:
+    ET.parse(p)
+' "${svg_paths[@]}" 2>&1); then
+    echo "pre-commit: REFUSED -- malformed XML in staged SVG file:" >&2
+    printf '%s\n' "$err" >&2
+    echo "  fix: repair XML syntax in the SVG file above and re-stage" >&2
+    exit 1
+  fi
+fi
+
+exit 0

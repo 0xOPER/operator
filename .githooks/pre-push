@@ -1,0 +1,260 @@
+#!/usr/bin/env bash
+# pre-push -- full local lint, identity, patch-scan, Rekor, ratchet and (on Linux) cleanroom gates.
+set -uo pipefail
+LC_ALL=C
+export LC_ALL
+
+if [ "${SETUP_HOOKS_STRICT_PATH:-0}" != "1" ]; then
+  PATH="$PATH:/opt/homebrew/bin:/usr/local/bin:${HOME:-/nonexistent}/.local/bin"
+  export PATH
+fi
+
+remote_name="${1:-origin}"
+
+lrefs=()
+lshas=()
+rrefs=()
+rshas=()
+while IFS=' ' read -r lref lsha rref rsha; do
+  [ -z "${lref:-}" ] && continue
+  lrefs+=("$lref")
+  lshas+=("$lsha")
+  rrefs+=("$rref")
+  rshas+=("$rsha")
+done
+exec </dev/null
+
+run_bounded() {
+  local secs="$1"
+  shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout -k 3 "$secs" "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout -k 3 "$secs" "$@"
+  else
+    python3 -I -c '
+import subprocess, sys
+try:
+    r = subprocess.run(sys.argv[2:], timeout=int(sys.argv[1]))
+    sys.exit(r.returncode)
+except subprocess.TimeoutExpired:
+    sys.exit(124)
+' "$secs" "$@"
+  fi
+}
+
+ROOT=$(run_bounded 5 git rev-parse --show-toplevel 2>/dev/null) || {
+  echo "pre-push: VOID, not inside a git work tree" >&2
+  exit 2
+}
+cd "$ROOT" || exit 2
+
+ZERO="0000000000000000000000000000000000000000"
+WANT_ID='OPERATOR project <351411109+0xOPER@users.noreply.github.com>'
+
+if [ "${#lshas[@]}" -eq 0 ]; then
+  head_sha=$(run_bounded 5 git rev-parse HEAD 2>/dev/null) || exit 0
+  lrefs=("refs/heads/main")
+  lshas=("$head_sha")
+  rrefs=("refs/heads/main")
+  rshas=("$ZERO")
+fi
+
+has_non_delete=0
+for sha in "${lshas[@]}"; do
+  if [ "$sha" != "$ZERO" ]; then
+    has_non_delete=1
+  fi
+done
+if [ "$has_non_delete" -eq 0 ]; then
+  exit 0
+fi
+
+TMP_DIR=$(mktemp -d) || exit 2
+trap 'rm -rf "${TMP_DIR:?}"' EXIT
+
+tb_args=()
+tb="${OPERATOR_TIER_B:-${HOME:-/nonexistent}/.config/operator-ceremony/tier-b.tsv}"
+if [ -f "$tb" ]; then
+  tb_args=(--tier-b "$tb")
+fi
+
+# Validate all local tags match CI's tagger & unsigned law
+tags=$(run_bounded 10 git for-each-ref refs/tags --format='%(objecttype) %(objectname)' | awk '$1=="tag"{print $2}' | run_bounded 10 git cat-file --batch || true)
+if [ -n "$tags" ]; then
+  bad_tagger=$(printf '%s\n' "$tags" | grep -a '^tagger ' | sed -E 's/^tagger //; s/ [0-9]+ [-+][0-9]{4}$//' | grep -vxF "$WANT_ID" || true)
+  if [ -n "$bad_tagger" ]; then
+    echo "pre-push: REFUSED -- annotated tag tagger must be '$WANT_ID', found: $bad_tagger" >&2
+    echo "  fix: recreate the tag unsigned under '$WANT_ID' (git -c tag.gpgSign=false tag -fa <tag> ...)" >&2
+    exit 1
+  fi
+  if printf '%s\n' "$tags" | grep -aE '^-----BEGIN ' >/dev/null; then
+    echo "pre-push: REFUSED -- signed tag detected in refs/tags (forbidden by CI)" >&2
+    echo "  fix: recreate the tag with 'git -c tag.gpgSign=false tag -fa <tag> ...'" >&2
+    exit 1
+  fi
+fi
+
+bad=0
+idx=0
+while [ "$idx" -lt "${#lshas[@]}" ]; do
+  lsha="${lshas[$idx]}"
+  rsha="${rshas[$idx]}"
+  idx=$((idx + 1))
+  [ "$lsha" = "$ZERO" ] && continue
+
+  commit_sha=$(run_bounded 5 git rev-parse "${lsha}^{commit}" 2>/dev/null) || {
+    echo "pre-push: REFUSED -- cannot resolve commit for $lsha" >&2
+    exit 1
+  }
+
+  # 1. keep-list parity and no symlinks on the pushed commit
+  if ! run_bounded 5 git cat-file -e "${commit_sha}:keep-list" 2>/dev/null; then
+    echo "pre-push: REFUSED -- keep-list missing in commit $commit_sha" >&2
+    echo "  fix: add keep-list and amend/commit before pushing" >&2
+    exit 1
+  fi
+  run_bounded 5 git ls-tree -r --name-only "$commit_sha" | LC_ALL=C sort > "$TMP_DIR/tree.sorted"
+  run_bounded 5 git show "${commit_sha}:keep-list" > "$TMP_DIR/kl.raw"
+  LC_ALL=C sort -u "$TMP_DIR/kl.raw" > "$TMP_DIR/kl.sorted"
+  if ! cmp -s "$TMP_DIR/kl.raw" "$TMP_DIR/kl.sorted"; then
+    echo "pre-push: REFUSED -- keep-list in $commit_sha is unsorted or contains duplicates" >&2
+    echo "  fix: run 'LC_ALL=C sort -u -o keep-list keep-list' and commit" >&2
+    exit 1
+  fi
+  if ! diff -u "$TMP_DIR/tree.sorted" "$TMP_DIR/kl.sorted" > "$TMP_DIR/kl.diff"; then
+    echo "pre-push: REFUSED -- files in $commit_sha do not match keep-list:" >&2
+    cat "$TMP_DIR/kl.diff" >&2
+    echo "  fix: sync keep-list with tracked files, sort with LC_ALL=C, and commit" >&2
+    exit 1
+  fi
+  links=$(run_bounded 5 git ls-tree -r "$commit_sha" | awk '$1=="120000" || $1=="160000" {print $4}')
+  if [ -n "$links" ]; then
+    echo "pre-push: REFUSED -- symlink or gitlink in $commit_sha:" >&2
+    printf '  %s\n' "$links" >&2
+    echo "  fix: remove symlinks/submodules from the commit history before pushing" >&2
+    exit 1
+  fi
+
+  # Determine outgoing commit list
+  revs=()
+  if [ "$rsha" != "$ZERO" ] && run_bounded 5 git cat-file -e "${rsha}^{commit}" 2>/dev/null; then
+    while IFS= read -r c; do
+      [ -n "$c" ] && revs+=("$c")
+    done < <(run_bounded 10 git rev-list "${rsha}..${commit_sha}")
+  else
+    while IFS= read -r c; do
+      [ -n "$c" ] && revs+=("$c")
+    done < <(run_bounded 10 git rev-list "$commit_sha" --not --remotes="$remote_name" 2>/dev/null || true)
+  fi
+  if [ "${#revs[@]}" -eq 0 ]; then
+    revs=("$commit_sha")
+  fi
+
+  # 2. Identity, attribution, and unsigned commit check across outgoing commits
+  bad_ids=$(run_bounded 10 git log --no-walk --format='%an <%ae>%n%cn <%ce>' "${revs[@]}" | LC_ALL=C sort -u | grep -vxF "$WANT_ID" || true)
+  if [ -n "$bad_ids" ]; then
+    echo "pre-push: REFUSED -- outgoing commits carry non-project author/committer:" >&2
+    printf '  %s\n' "$bad_ids" >&2
+    echo "  fix: run 'scripts/setup-hooks.sh --configure-identity' and rewrite outgoing commits with 'git commit --amend --reset-author'" >&2
+    exit 1
+  fi
+  if run_bounded 10 git log --no-walk --format=%B "${revs[@]}" | grep -iE '^\s*co-authored-by:|^\s*[a-z-]+-by:.*claude|(made|generated) (with|by) \[?claude|noreply@anthropic\.com' >/dev/null; then
+    echo "pre-push: REFUSED -- outgoing commit message contains Co-authored-by or tool attribution" >&2
+    echo "  fix: amend/rebase outgoing commit messages to remove Co-authored-by / tool attribution trailers" >&2
+    exit 1
+  fi
+  if printf '%s\n' "${revs[@]}" | run_bounded 10 git cat-file --batch | grep -aE '^(gpgsig|mergetag)' >/dev/null; then
+    echo "pre-push: REFUSED -- signed commit or mergetag detected in outgoing commits (forbidden by CI)" >&2
+    echo "  fix: run 'git config commit.gpgsign false' and re-create the commit unsigned" >&2
+    exit 1
+  fi
+
+  # 3. Export pushed commit tree and run release-lint + patch/message lint + Rekor verification
+  TMP_EXP="$TMP_DIR/exp-$idx"
+  TMP_PATCH="$TMP_DIR/patch-$idx"
+  mkdir -p "$TMP_EXP" "$TMP_PATCH"
+  run_bounded 15 git archive "$commit_sha" | tar -xf - -C "$TMP_EXP" || {
+    echo "pre-push: VOID -- failed to archive $commit_sha" >&2
+    exit 2
+  }
+  if [ -f "$ROOT/scripts/release-lint.py" ]; then
+    if ! rl_out=$(run_bounded 30 python3 -I "$ROOT/scripts/release-lint.py" --root "$TMP_EXP" "${tb_args[@]}" 2>&1); then
+      echo "pre-push: REFUSED -- release-lint failed on commit $commit_sha:" >&2
+      printf '%s\n' "$rl_out" >&2
+      echo "  fix: remove flagged content/filenames and amend/rebase the commit" >&2
+      bad=1
+    fi
+    run_bounded 10 git log --no-walk --format='%an <%ae>%n%cn <%ce>%n%B' "${revs[@]}" > "$TMP_PATCH/commits.txt"
+    run_bounded 10 git for-each-ref refs/tags --format='%(refname)%0a%(taggername) %(taggeremail)%0a%(contents)' >> "$TMP_PATCH/commits.txt"
+    run_bounded 15 git log --no-walk -p --format= "${revs[@]}" -- . ':!test/lint/tier-a.tsv' > "$TMP_PATCH/patches.txt"
+    if ! rlp_out=$(run_bounded 30 python3 -I "$ROOT/scripts/release-lint.py" --root "$TMP_PATCH" "${tb_args[@]}" 2>&1); then
+      echo "pre-push: REFUSED -- release-lint failed on outgoing commit messages or patches:" >&2
+      printf '%s\n' "$rlp_out" >&2
+      echo "  fix: rewrite outgoing commit history so neither messages nor diffs contain private/disallowed tokens" >&2
+      bad=1
+    fi
+  fi
+  if [ -f "$TMP_EXP/scripts/verify-rekor.py" ] && [ -f "$TMP_EXP/CLAIMS.md" ] && [ -f "$TMP_EXP/claims-rekor.json" ] && [ -f "$TMP_EXP/claims.pub" ]; then
+    if ! rk_out=$(run_bounded 20 python3 -I "$TMP_EXP/scripts/verify-rekor.py" --artifact "$TMP_EXP/CLAIMS.md" --entry "$TMP_EXP/claims-rekor.json" --pubkey "$TMP_EXP/claims.pub" 2>&1); then
+      echo "pre-push: REFUSED -- CLAIMS.md Rekor verification failed:" >&2
+      printf '%s\n' "$rk_out" >&2
+      echo "  fix: restore CLAIMS.md, claims-rekor.json, and claims.pub (CLAIMS.md is frozen)" >&2
+      bad=1
+    fi
+  fi
+done
+
+if [ -f "$ROOT/scripts/release-lint.py" ] && [ -f "$ROOT/test/lint/tier-a.tsv" ]; then
+  if ! rls_out=$(run_bounded 60 python3 -I "$ROOT/scripts/release-lint.py" --selftest 2>&1); then
+    echo "pre-push: REFUSED -- release-lint.py --selftest failed:" >&2
+    printf '%s\n' "$rls_out" >&2
+    echo "  fix: repair scripts/release-lint.py or test/lint/tier-a.tsv" >&2
+    bad=1
+  fi
+fi
+
+[ "$bad" -eq 0 ] || exit 1
+
+# 4. Shellcheck and ruff ratchets when pipx is available (offline only)
+if [ -x "$ROOT/test/ratchet.sh" ]; then
+  if command -v pipx >/dev/null 2>&1; then
+    rat_out=$(PIP_NO_INDEX=1 run_bounded 120 "$ROOT/test/ratchet.sh" 2>&1)
+    rat_rc=$?
+    if [ "$rat_rc" -eq 1 ]; then
+      echo "pre-push: REFUSED -- shellcheck/ruff ratchet failed:" >&2
+      printf '%s\n' "$rat_out" >&2
+      echo "  fix: resolve new shellcheck/ruff findings (or lower test/ratchet.tsv if findings decreased)" >&2
+      exit 1
+    elif [ "$rat_rc" -ne 0 ]; then
+      echo "pre-push: note: pipx offline cache unavailable (rc=$rat_rc); CI will enforce test/ratchet.sh" >&2
+    fi
+  else
+    echo "pre-push: note: pipx not installed; skipping local test/ratchet.sh (CI will run it)" >&2
+  fi
+fi
+
+# 5. Cleanroom selftest battery on Linux; explicit notice on macOS/non-Linux
+os_name=$(uname -s 2>/dev/null || echo unknown)
+if [ "$os_name" = "Linux" ]; then
+  if [ -x "$ROOT/test/cleanroom.sh" ] && [ -x "$ROOT/scripts/run-all-selftests.sh" ]; then
+    if [ -d /work/operator ] && [ "${HOME:-}" = "/tmp/home" ]; then
+      echo "pre-push: note: already inside cleanroom; skipping nested cleanroom battery" >&2
+    elif ! command -v bwrap >/dev/null 2>&1; then
+      echo "pre-push: REFUSED -- Linux host is missing bubblewrap (bwrap)" >&2
+      echo "  fix: sudo apt install bubblewrap" >&2
+      exit 1
+    else
+      if ! cr_out=$(run_bounded 300 "$ROOT/test/cleanroom.sh" "$ROOT/scripts/run-all-selftests.sh" 2>&1); then
+        echo "pre-push: REFUSED -- cleanroom selftest battery failed:" >&2
+        printf '%s\n' "$cr_out" | tail -n 30 >&2
+        echo "  fix: run 'test/cleanroom.sh scripts/run-all-selftests.sh' and fix the failing tool" >&2
+        exit 1
+      fi
+    fi
+  fi
+else
+  echo "pre-push: note: $os_name host has no Linux bwrap; bwrap cleanroom suites were skipped locally and CI will run them" >&2
+fi
+
+exit 0
