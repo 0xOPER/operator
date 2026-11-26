@@ -1,68 +1,73 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 380" width="1200" height="380" role="img" aria-label="OPERATOR — Safe Overnight Autonomy for Coding Agents">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 300" width="880" height="300" role="img" aria-label="OPERATOR — Safe Overnight Autonomy for Coding Agents">
   <defs>
-    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
-      <path d="M 32 0 L 0 0 0 32" fill="none" stroke="#1b222a" stroke-width="1"/>
+    <pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse">
+      <path d="M 24 0 L 0 0 0 24" fill="none" stroke="#1b222a" stroke-width="1"/>
     </pattern>
-    <radialGradient id="glow" cx="50%" cy="48%" r="58%">
-      <stop offset="0%" stop-color="#172028" stop-opacity="0.9"/>
-      <stop offset="100%" stop-color="#101418" stop-opacity="1"/>
+    <radialGradient id="glow" cx="50%" cy="48%" r="60%">
+      <stop offset="0%" stop-color="#172028" stop-opacity="0.92"/>
+      <stop offset="100%" stop-color="#111519" stop-opacity="1"/>
     </radialGradient>
     <linearGradient id="amberPill" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" stop-color="#e5a00d" stop-opacity="0.16"/>
-      <stop offset="50%" stop-color="#e5a00d" stop-opacity="0.06"/>
-      <stop offset="100%" stop-color="#151b22" stop-opacity="0.8"/>
+      <stop offset="0%" stop-color="#2b2213"/>
+      <stop offset="65%" stop-color="#1d1b18"/>
+      <stop offset="100%" stop-color="#141920"/>
     </linearGradient>
   </defs>
 
-  <!-- Canvas & subtle architectural grid -->
-  <rect width="1200" height="380" rx="14" fill="url(#glow)"/>
-  <rect width="1200" height="380" rx="14" fill="url(#grid)" opacity="0.85"/>
-  <rect x="1" y="1" width="1198" height="378" rx="13" fill="none" stroke="#232b33" stroke-width="1.5"/>
+  <rect width="880" height="300" rx="12" fill="url(#glow)"/>
+  <rect width="880" height="300" rx="12" fill="url(#grid)" opacity="0.85"/>
+  <rect x="1" y="1" width="878" height="298" rx="11" fill="none" stroke="#26303a" stroke-width="1.5"/>
 
-  <!-- Framed OP Emblem -->
-  <g transform="translate(152, 86)">
-    <rect width="208" height="208" rx="10" fill="#101418" stroke="#2c3640" stroke-width="2"/>
-    <g transform="translate(-24, -24)">
-      <path d="M126 84 H158 L184 110 V130 L158 156 H140 V174 H126 Z M142 102 V138 H152 L166 124 V116 L152 102 Z" fill="#4cc38a" fill-rule="evenodd"/>
-      <circle cx="182" cy="120" r="13" fill="#101418"/>
-      <circle cx="182" cy="120" r="7.5" fill="#4cc38a"/>
-      <path d="M88 76 H134 L154 96 V136 H138 V103 L127 92 H95 L84 103 V153 L95 164 H127 L138 153 V146 H154 V160 L134 180 H88 L68 160 V96 Z" fill="#d7dee6"/>
-    </g>
+  <!-- Framed OP Emblem (exact geometry from logo.svg) -->
+  <rect x="62" y="58" width="184" height="184" rx="12" fill="#111519" stroke="#2c3640" stroke-width="1.8"/>
+  <g transform="translate(-22.44,-22.89) scale(0.3380)">
+    <path d="M512 398 H527 L555 426 V490 H568 V534 H555 V616 L546 625 H512 Z" fill="#4cbc8a"/>
+    <path d="M571 341 H647 L704 398 V414 A32 32 0 0 0 704 478 V492 L662 534 H638 V496 L661 473 V416 L628 383 H612 Z" fill="#4cbc8a"/>
+    <circle cx="705" cy="446" r="19.5" fill="#4cbc8a"/>
+    <path d="M376 341 H552 L624 413 V535 H581 V430 L535 384 H394 L362 416 V608 L393 639 H550 L581 608 V548 H624 V626 L568 682 H375 L319 626 V398 Z" fill="#d5dfe8"/>
   </g>
 
-  <!-- Wordmark -->
-  <text x="404" y="164" fill="#d7dee6" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace" font-size="78" font-weight="800" letter-spacing="10">OPERATOR</text>
+  <!-- Outlined Chakra Petch Bold (OFL) Wordmark -->
+  <g fill="#e2eaf2" aria-hidden="true">
+    <path d="M55 115V585L170 700H530L645 585V115L530 0H170ZM458 116 509 167V533L458 584H242L191 533V167L242 116Z" transform="translate(286.00,134.00) scale(0.08600,-0.08600)"/>
+    <path d="M65 700H504L611 592V347L503 238H201V0H65ZM442 352 477 387V551L442 586H201V352Z" transform="translate(350.40,134.00) scale(0.08600,-0.08600)"/>
+    <path d="M65 700H571V585H201V408H542V295H201V115H571V0H65Z" transform="translate(410.16,134.00) scale(0.08600,-0.08600)"/>
+    <path d="M615 232V0H479V201L419 268H201V0H65V700H504L611 592V380L543 311ZM201 380H442L477 415V551L442 586H201Z" transform="translate(466.47,134.00) scale(0.08600,-0.08600)"/>
+    <path d="M261 700H385L641 0H503L446 155H200L143 0H5ZM416 267 323 533H321L231 267Z" transform="translate(528.72,134.00) scale(0.08600,-0.08600)"/>
+    <path d="M224 585H15V700H569V585H360V0H224Z" transform="translate(588.48,134.00) scale(0.08600,-0.08600)"/>
+    <path d="M55 115V585L170 700H530L645 585V115L530 0H170ZM458 116 509 167V533L458 584H242L191 533V167L242 116Z" transform="translate(642.90,134.00) scale(0.08600,-0.08600)"/>
+    <path d="M615 232V0H479V201L419 268H201V0H65V700H504L611 592V380L543 311ZM201 380H442L477 415V551L442 586H201Z" transform="translate(707.30,134.00) scale(0.08600,-0.08600)"/>
+  </g>
 
-  <!-- Tagline -->
-  <text x="408" y="210" fill="#8b98a5" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="25" font-weight="500" letter-spacing="0.4">Safe Overnight Autonomy for Coding Agents</text>
+  <!-- Tagline (22px at 1:1 on 880 canvas) -->
+  <text x="290" y="176" fill="#95a3b1" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="22" font-weight="500" letter-spacing="0.2">Safe Overnight Autonomy for Coding Agents</text>
 
-  <!-- 3-Stage Pipeline Pills: Sign -> Jail & Verify -> Promote -->
-  <g transform="translate(408, 240)" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" font-weight="500">
+  <!-- 3-Stage Pipeline Pills (16px text, generous padding, fills 290..806) -->
+  <g transform="translate(290, 202)" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="16" font-weight="500">
     <!-- Pill 1: Sign -->
-    <rect x="0" y="0" width="122" height="40" rx="20" fill="#131920" stroke="#2c3640" stroke-width="1.5"/>
-    <circle cx="24" cy="20" r="5.5" fill="#4cc38a"/>
-    <text x="40" y="26" fill="#d7dee6">Sign</text>
+    <rect x="0" y="0" width="108" height="40" rx="20" fill="#131920" stroke="#2f3b47" stroke-width="1.5"/>
+    <circle cx="24" cy="20" r="5" fill="#4cbc8a"/>
+    <text x="39" y="25.5" fill="#dce4ec">Sign</text>
 
     <!-- Arrow 1 -->
-    <line x1="128" y1="20" x2="170" y2="20" stroke="#485665" stroke-width="1.5"/>
-    <path d="M164 15 L172 20 L164 25" fill="none" stroke="#485665" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <line x1="115" y1="20" x2="147" y2="20" stroke="#546373" stroke-width="1.5"/>
+    <path d="M141 15 L149 20 L141 25" fill="none" stroke="#546373" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
 
     <!-- Pill 2: Jail & Verify -->
-    <rect x="178" y="0" width="206" height="40" rx="20" fill="url(#amberPill)" stroke="#9e7114" stroke-width="1.5"/>
-    <!-- Minimal Lock Icon -->
-    <g transform="translate(198, 11)" fill="none" stroke="#e5a00d" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="155" y="0" width="176" height="40" rx="20" fill="url(#amberPill)" stroke="#a87918" stroke-width="1.5"/>
+    <g transform="translate(175, 11.5)" fill="none" stroke="#e5a00d" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
       <rect x="1" y="7" width="12" height="9" rx="2" fill="#e5a00d" fill-opacity="0.22"/>
       <path d="M4 7 V4.5 A3 3 0 0 1 10 4.5 V7"/>
     </g>
-    <text x="223" y="26" fill="#eef2f6">Jail &amp; Verify</text>
+    <text x="199" y="25.5" fill="#f0f4f8">Jail &amp; Verify</text>
 
     <!-- Arrow 2 -->
-    <line x1="390" y1="20" x2="432" y2="20" stroke="#485665" stroke-width="1.5"/>
-    <path d="M426 15 L434 20 L426 25" fill="none" stroke="#485665" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <line x1="338" y1="20" x2="370" y2="20" stroke="#546373" stroke-width="1.5"/>
+    <path d="M364 15 L372 20 L364 25" fill="none" stroke="#546373" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
 
     <!-- Pill 3: Promote -->
-    <rect x="440" y="0" width="154" height="40" rx="20" fill="#131920" stroke="#2c3640" stroke-width="1.5"/>
-    <circle cx="464" cy="20" r="5.5" fill="#4cc38a"/>
-    <text x="480" y="26" fill="#d7dee6">Promote</text>
+    <rect x="378" y="0" width="138" height="40" rx="20" fill="#131920" stroke="#2f3b47" stroke-width="1.5"/>
+    <circle cx="402" cy="20" r="5" fill="#4cbc8a"/>
+    <text x="417" y="25.5" fill="#dce4ec">Promote</text>
   </g>
 </svg>

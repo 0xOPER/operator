@@ -1,11 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="OPERATOR logo">
-  <rect width="256" height="256" rx="44" fill="#101418"/>
-  <rect x="20" y="20" width="216" height="216" rx="34" fill="none" stroke="#232b33" stroke-width="2.5"/>
-  <!-- Emerald P stem and angular loop -->
-  <path d="M126 84 H158 L184 110 V130 L158 156 H140 V174 H126 Z M142 102 V138 H152 L166 124 V116 L152 102 Z" fill="#4cc38a" fill-rule="evenodd"/>
-  <!-- Cutout gap around terminal dot -->
-  <circle cx="182" cy="120" r="13" fill="#101418"/>
-  <circle cx="182" cy="120" r="7.5" fill="#4cc38a"/>
-  <!-- Ice-white octagonal O containment frame interlocking over P -->
-  <path d="M88 76 H134 L154 96 V136 H138 V103 L127 92 H95 L84 103 V153 L95 164 H127 L138 153 V146 H154 V160 L134 180 H88 L68 160 V96 Z" fill="#d7dee6"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024" role="img" aria-label="OPERATOR logo">
+  <rect width="1024" height="1024" fill="#111519"/>
+  <rect x="169" y="169" width="686" height="686" rx="98" fill="none" stroke="#2b343e" stroke-width="4"/>
+  <path d="M512 398 H527 L555 426 V490 H568 V534 H555 V616 L546 625 H512 Z" fill="#4cbc8a"/>
+  <path d="M571 341 H647 L704 398 V414 A32 32 0 0 0 704 478 V492 L662 534 H638 V496 L661 473 V416 L628 383 H612 Z" fill="#4cbc8a"/>
+  <circle cx="705" cy="446" r="19.5" fill="#4cbc8a"/>
+  <path d="M376 341 H552 L624 413 V535 H581 V430 L535 384 H394 L362 416 V608 L393 639 H550 L581 608 V548 H624 V626 L568 682 H375 L319 626 V398 Z" fill="#d5dfe8"/>
 </svg>
