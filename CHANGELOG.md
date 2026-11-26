@@ -5,7 +5,7 @@ All notable changes to OPERATOR are documented in this file.
 ## Unreleased (`main`)
 
 ### Fixes
-- `bin/review.py`: both selftest suites now report a failure (exit 1) when an arm crashes with VOID after an earlier arm already recorded a failure. A break that lets a forged verdict deliver moves the fixture out from under the arms after it; the suite used to exit 2 and forget the failure it had printed, which is why the ratchet reported four review rows as VOID.
+- `bin/review.py`: both selftest suites now report a failure (exit 1) when an arm crashes with VOID after an earlier arm already recorded a failure. A break that lets a forged verdict deliver moves the fixture out from under the arms after it; the suite used to exit 2 and forget the failure it had printed, which is why the ratchet reported four review rows as VOID. The truncated-pack arm also records a pack that got past the guard, whatever the unguarded path dies of afterwards.
 - `test/neuter.py`: a row that does not die prints the last lines of the mutated test's output, so a VOID or a survivor can be told apart from an environment that broke the test.
 - `.githooks/pre-push`: the cleanroom battery runs by its repo-relative path. The gate handed the room an absolute host path, which cannot exist inside it (the tree is `/work/operator` there), so every push from a Linux clone with the hooks installed was refused. `scripts/setup-hooks.sh --first-level` proves the step really runs (a failing battery refuses the push) and the neuter row `HK-battery-path` pins it.
 
