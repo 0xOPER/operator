@@ -12,8 +12,8 @@ export LC_ALL
 exec </dev/null
 
 ROOT=$(cd -- "$(dirname -- "$(readlink -f -- "$0")")/.." && pwd)
-WANT_NAME="OPERATOR project"
-WANT_EMAIL="351411109+0xOPER@users.noreply.github.com"
+WANT_NAME="HashedViking"
+WANT_EMAIL="6432677+HashedViking@users.noreply.github.com"
 WANT_ID="$WANT_NAME <$WANT_EMAIL>"
 
 selftest() {

@@ -37,7 +37,7 @@ ROOT=$(run_bounded 5 git rev-parse --show-toplevel 2>/dev/null) || {
 }
 cd "$ROOT" || exit 2
 
-WANT_ID='OPERATOR project <351411109+0xOPER@users.noreply.github.com>'
+WANT_ID='HashedViking <6432677+HashedViking@users.noreply.github.com>'
 author_raw=$(run_bounded 5 git var GIT_AUTHOR_IDENT 2>/dev/null || true)
 committer_raw=$(run_bounded 5 git var GIT_COMMITTER_IDENT 2>/dev/null || true)
 author_id=$(printf '%s\n' "$author_raw" | sed -E 's/ [0-9]+ [-+][0-9]{4}$//')

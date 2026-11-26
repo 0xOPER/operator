@@ -151,7 +151,7 @@ def selftest(tiers):
             (root / "plant.txt").write_text(probe[::-1] + "\n")
             check(any(h[0] == want for h in scan(root, tiers[:1])), f"{want} shape {probe}")
             (root / "plant.txt").unlink()
-        for quiet in ('"$d/root/programs/fx"', "x@example.com", "351411109+0xOPER@users.noreply.github.com", "bin/tool.sh and test/run.py", "src/media/logo.png"):
+        for quiet in ('"$d/root/programs/fx"', "x@example.com", "6432677+HashedViking@users.noreply.github.com", "351411109+0xOPER@users.noreply.github.com", "bin/tool.sh and test/run.py", "src/media/logo.png"):
             (root / "plant.txt").write_text(quiet + "\n")
             check(not scan(root, tiers[:1]), f"quiet on {quiet}")
             (root / "plant.txt").unlink()

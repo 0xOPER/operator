@@ -136,7 +136,8 @@ NEUTERS = [
     ("FE-void", FE, "except (OSError, UnicodeDecodeError) as e:\n        _void(f\"can't read brief {args.brief}: {e}\")", "except (OSError, UnicodeDecodeError) as e:\n        sys.exit(1)"),
     # release lint
     ("RL-rootpath", "test/lint/tier-a.tsv", r"|(?<![\w.$})>-])/(?:root|srv|media)/[A-Za-z0-9_.-]+", "", "scripts/release-lint.py --selftest"),
-    ("RL-noreply", "test/lint/tier-a.tsv", r"(?!351411109\+0xOPER@users\.noreply\.github\.com\b)", r"(?![^@]*@users\.noreply\.github\.com\b)", "scripts/release-lint.py --selftest"),
+    ("RL-noreply", "test/lint/tier-a.tsv", r"(?!6432677\+HashedViking@users\.noreply\.github\.com\b)", r"(?![^@]*@users\.noreply\.github\.com\b)", "scripts/release-lint.py --selftest"),
+    ("RL-noreply-legacy", "test/lint/tier-a.tsv", r"(?!351411109\+0xOPER@users\.noreply\.github\.com\b)", r"(?![^@]*@users\.noreply\.github\.com\b)", "scripts/release-lint.py --selftest"),
     ("RL-schemeless", "test/lint/tier-a.tsv", r'''|(?<![\w/@-])(?:[a-z0-9-]+\.)*(?:github\.com|githubusercontent\.com)/(?!(?:gitleaks|trufflesecurity)/|0xOPER/operator(?:/|\.git(?![\w.-])|(?=$|[\s"'<>)\#?])))[\w.-]+/[\w.-]+''', "", "scripts/release-lint.py --selftest"),
     ("RL-name", RL, "if rx.search(name):", "if False:"),
     ("RL-ascii", RL, "re.compile(parts[1], re.ASCII)", "re.compile(parts[1])"),
