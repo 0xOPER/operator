@@ -149,6 +149,7 @@ control = "tests.control"           # the twin: a dead control fails its row
 evidence = "sealed"                 # sealed | author-reachable | human
 mutable_configs = []                # optional: allowlisted runner configs left writable
 # gpu = true                        # optional: mount host nvidia devices (Voids if absent)
+# env = "tests"                     # optional: run the check in a signed environment (below)
 
 [[row]]
 id = "scope.changed"
@@ -202,7 +203,12 @@ candidate.
 
 ### Kinds
 
-- **run** -- `cmd` runs in the check jail; exit 0 is green. `contract lint`
+- **run** -- `cmd` runs in the check jail; exit 0 is green. With `env = "<name>"`
+  it runs instead in that signed environment (`docs/charter.md`): a container the
+  engine launches from the program's `charter.toml`, with the same export, the
+  same pinned oracle and runner configs mounted read-only at their paths and the
+  same `pytest-guard` files. The row's timeout may not exceed the environment's
+  wall, and its receipt names the environment and the image. `contract lint`
   refuses exact trivial commands (`true`, `:`, `pass`...) as well as `|| true`
   / `true ||` shell short-circuits, and requires every `run` row to carry an
   `oracle`, `control`, or `expect_base_fail = true`.

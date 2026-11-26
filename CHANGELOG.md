@@ -4,6 +4,10 @@ All notable changes to OPERATOR are documented in this file.
 
 ## Unreleased (`main`)
 
+### Added
+- Signed environments (`docs/charter.md`, M1 first slice). A program's `charter.toml` declares `[[environment.<name>]]` blocks: a digest-pinned image that must be present locally and is never pulled, the runtime, devices, host mounts, no network, a read-only rootfs, size-capped scratch, a non-root user, and memory, CPU, process and wall limits. `bin/environment.py` is the only container client: `operator environment validate <dir>` checks the charter and `operator environment run <dir> --env NAME -- <cmd...>` is the door. The arm ruling is verified before every run, so an edited environment is an unsigned program, and every run files a hash-chained receipt (`env:<name>`). A contract row with `env = "<name>"` runs its check there with the jail's read-only overlays mounted at their paths, and its receipt names the environment and the image. The block sits inside the signed closure like every other program file.
+- Neuter rows for every environment guard (41) and `HK-battery-path` for the push gate.
+
 ### Fixes
 - `bin/review.py`: both selftest suites now report a failure (exit 1) when an arm crashes with VOID after an earlier arm already recorded a failure. A break that lets a forged verdict deliver moves the fixture out from under the arms after it; the suite used to exit 2 and forget the failure it had printed, which is why the ratchet reported four review rows as VOID. The truncated-pack arm also records a pack that got past the guard, whatever the unguarded path dies of afterwards.
 - `test/neuter.py`: a row that does not die prints the last lines of the mutated test's output, so a VOID or a survivor can be told apart from an environment that broke the test.

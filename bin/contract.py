@@ -64,7 +64,7 @@ ROW_KEYS = {"id": str, "stage": str, "desc": str, "kind": str, "seat": str, "rev
             "require": list, "forbid": list, "gpu": bool,
             "expect_base_fail": bool, "mutable_configs": list,
             "runner": str, "min_tests": int, "test_paths": list,
-            "diff_base": str}
+            "diff_base": str, "env": str}
 KINDS = ("run", "ruling", "tsv", "git")
 EVIDENCE = ("sealed", "author-reachable", "human")
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
@@ -156,6 +156,18 @@ def _disk_prog_key(prog):
             with open(fp, "rb") as f:
                 h.update(hashlib.sha256(f.read()).digest() + b"\n")
     return h.hexdigest()[:16]
+
+
+def _charter_environments(prog):
+    """The environments the program's charter signs (docs/charter.md); {} without one.
+    A broken charter is a finding here, where the rows that name it are loaded."""
+    if not os.path.isfile(os.path.join(prog, "charter.toml")):
+        return {}
+    import environment as env_mod
+    try:
+        return env_mod.specs(prog)
+    except env_mod.Finding as e:
+        raise Finding(str(e))
 
 
 def load(prog):
@@ -278,6 +290,14 @@ def load(prog):
             raise Finding(f"row {rid}: ro must be a list of paths")
         if "gpu" in row and not isinstance(row["gpu"], bool):
             raise Finding(f"row {rid}: gpu is true or absent")
+        if "env" in row:
+            if kind != "run" or row.get("driver") == "external":
+                raise Finding(f"row {rid}: only a run row with its own cmd takes env")
+            if not isinstance(row["env"], str) or not ID_RE.fullmatch(row["env"]):
+                raise Finding(f"row {rid}: env must be an environment name: [a-z0-9][a-z0-9._-]{{0,63}}")
+            if "gpu" in row:
+                raise Finding(f"row {rid}: env and gpu name devices twice; an environment's "
+                              "devices come from its signed spec")
         if "expect_base_fail" in row and not isinstance(row["expect_base_fail"], bool):
             raise Finding(f"row {rid}: expect_base_fail is true or absent")
         if ("expect_base_fail" in row and kind != "run") or (
@@ -386,6 +406,19 @@ def load(prog):
                 raise Finding(f"row {rid}: a run row needs a cmd")
             check_path_list(f"row {rid}", ro, "an ro path")
         by_id[rid] = row
+    env_specs = _charter_environments(prog)
+    for rid, row in by_id.items():
+        if row.get("env"):
+            # the row's check leaves the jail only for an environment the owner signed
+            if row["env"] not in env_specs:
+                raise Finding(f"row {rid}: env {row['env']!r} names no environment in "
+                              f"charter.toml; declare [[environment.{row['env']}]] "
+                              "(docs/charter.md), or drop env")
+            wall = env_specs[row["env"]]["limits"]["wall"]
+            if row["timeout"] > wall:
+                raise Finding(f"row {rid}: timeout {row['timeout']} exceeds environment "
+                              f"{row['env']}'s wall of {wall}s; lower the timeout or raise "
+                              "the signed wall")
     for rid, row in by_id.items():
         for d in row["deps"]:
             if d not in by_id:
@@ -553,7 +586,8 @@ def results_for(contract, commit, arm, pin=None):
     return out
 
 
-def record(row_id, commit, arm, rc, runfile, prog_key, pin=None, overlay_off=False):
+def record(row_id, commit, arm, rc, runfile, prog_key, pin=None, overlay_off=False, extra=()):
+    """Files one result row. `extra` adds keys a row's own door carries (an environment)."""
     argv = [os.path.join(ROOT, "bin", "call-log.sh"), "record", f"check:{row_id}",
             "--key", f"prog={prog_key}", "--key", f"row={row_id}", "--key", f"commit={commit}",
             "--key", f"arm={arm}", "--key", f"rc={rc}"]
@@ -561,6 +595,8 @@ def record(row_id, commit, arm, rc, runfile, prog_key, pin=None, overlay_off=Fal
         argv += ["--key", f"pin={pin}"]
     if overlay_off:
         argv += ["--key", "overlay=off"]
+    for k, v in extra:
+        argv += ["--key", f"{k}={v}"]
     argv += ["--", "cat", runfile]
     r = sh(argv)
     if r.returncode != 0 or not r.stdout.strip():
@@ -1267,11 +1303,22 @@ def run_check(row, prog, repo, commit, arm, results, prog_key, record_log=True, 
             ("PYTHONDONTWRITEBYTECODE", "1"),
             *guard_env,
         )
-        argv = ["prlimit", f"--fsize={FSIZE}", "--core=0"] + \
-            bwrap_args(binds=extra, setenvs=base_setenvs,
-                       chdir="/w/export", export=export, export_dest="/w/export") + \
-            inner_limits + inner_cmd
-        rc, kept = run_capped(argv, row["timeout"], OUT_CAP)
+        env_meta = None
+        if row.get("env"):
+            # The environment door: the same export, the same read-only overlays
+            # (the pinned oracle, the runner configs, pytest-guard's files) at the
+            # same paths, in a container the owner signed. bin/environment.py is
+            # the only container client and verifies the ruling before every run.
+            import environment as env_mod
+            rc, kept, env_meta = env_mod.run_check_env(
+                prog, row["env"], export, env_mod.overlays_of(binds), inner_cmd,
+                base_setenvs, row["timeout"], OUT_CAP)
+        else:
+            argv = ["prlimit", f"--fsize={FSIZE}", "--core=0"] + \
+                bwrap_args(binds=extra, setenvs=base_setenvs,
+                           chdir="/w/export", export=export, export_dest="/w/export") + \
+                inner_limits + inner_cmd
+            rc, kept = run_capped(argv, row["timeout"], OUT_CAP)
         if guard_key is not None:
             g_ok, g_why = _verify_pytest_receipt(rec_host, guard_key, row.get("min_tests", 1), pin_unskipped)
             if not g_ok:
@@ -1285,7 +1332,8 @@ def run_check(row, prog, repo, commit, arm, results, prog_key, record_log=True, 
             f.write(kept)
         cid = record(row["id"], commit, arm, rc, runfile, prog_key,
                      pin=pin if (row["oracle"] or row.get("expect_base_fail")) else None,
-                     overlay_off=not binds_ok)
+                     overlay_off=not binds_ok,
+                     extra=(("env", row["env"]), ("image", env_meta["image"])) if env_meta else ())
         return rc, runfile, cid
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

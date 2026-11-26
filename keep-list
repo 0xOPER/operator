@@ -37,6 +37,7 @@ bin/compose-fence.py
 bin/contract.py
 bin/demo.py
 bin/egress-proxy.py
+bin/environment.py
 bin/fixtures.py
 bin/init.py
 bin/lib/jail.py
@@ -110,6 +111,7 @@ test/lib/canary-walker.py
 test/lib/cell-driver.sh
 test/lib/cell-stub.py
 test/lib/engine-cell.sh
+test/lib/fake-container.py
 test/lib/pilot-export-selftest.sh
 test/lib/topology-drill.py
 test/lint/tier-a.tsv

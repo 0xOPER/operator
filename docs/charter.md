@@ -49,9 +49,9 @@ that.
 
 | Branch | Today | Charter model | Status |
 |---|---|---|---|
-| Legislature | signs `team.toml` and `contract.toml` per program | signs a **charter**: powers, purse, rules of evidence, reserved questions. Once, standing | specified here |
+| Legislature | signs `team.toml` and `contract.toml` per program | signs a **charter**: powers, purse, rules of evidence, reserved questions. Once, standing | `[[environment.<name>]]` blocks are signed and enforced; the rest is specified here |
 | Executive | `[seat.op]`: five triage verbs, no plan | the **manager**: every power to act inside the charter, through one door | M4 |
-| Judiciary | engine, zero LLM | unchanged, plus the environment runner, reach policy and plan audit | M1, M2 |
+| Judiciary | engine, zero LLM | unchanged, plus the environment runner, reach policy and plan audit | environment runner built; reach policy M2 |
 
 The signed object moves up one level: from the plan to the rules for making
 plans. A signed `team.toml` plus `contract.toml` remains valid as the
@@ -67,20 +67,21 @@ identity is computed, never authored.
 
 | Section | Holds | Status |
 |---|---|---|
-| `schema` | `1` | M1 |
-| `name` | the charter's name, `[a-z0-9][a-z0-9._-]{0,63}` | M1 |
+| `schema` | `1` | built |
+| `name` | the charter's name, `[a-z0-9][a-z0-9._-]{0,63}` | built |
 | `[standing]` | `not_after`. A charter is standing: one signature covers many runs until it expires | today's arm ruling (`--not-after`) |
 | `[purse]` | ceilings: `usd`, `minutes`, `context`, `concurrency`. Ceilings only; allocation is the manager's | M4; until then `team.toml` budgets are the ceilings |
 | `[reach]` | the network policy (section 5) | M2 |
 | `[evidence]` | mutation floor, review law (section 8) | M3 |
 | `[reserved]` | questions the owner adds to the reserved list | M4 |
-| `[[environment.<name>]]` | signed environment specs (section 4) | M1 |
+| `[[environment.<name>]]` | signed environment specs (section 4) | built |
 
 Write scopes do not move: they stay on seats, as `[seat.<name>].write`.
 
-An empty purse is not an unlimited purse. A charter without a `[purse]` table
-refuses at validate and names the missing ceiling. OPERATOR ships no default
-number: the ceiling is the owner's.
+An empty purse is not an unlimited purse. The purse is shape-checked now and
+enforced with the manager milestone; from then on a charter without a `[purse]`
+table refuses at validate and names the missing ceiling. OPERATOR ships no
+default number: the ceiling is the owner's.
 
 ## 4. Environments
 
@@ -106,35 +107,42 @@ user = "1000:1000"                 # never root
 
 | Field | Meaning |
 |---|---|
-| `image` | pinned by digest. A tag is refused: the digest is the identity, and a run whose local image does not carry it refuses |
-| `runtime` | `docker`, `podman`, or `none` |
+| `image` | pinned by digest: `name@sha256:<64 hex>` or a local image id `sha256:<64 hex>`. A tag is refused, and the engine never pulls: the image must be present locally under that digest |
+| `runtime` | `docker` is built. `podman` and `none` are specified and refuse until they are proven |
 | `devices` | `gpu` binds the host's compute devices; a `/dev` path binds that device |
 | `mounts` | host paths the environment may see, each `ro` or `rw`, at the same path inside |
 | `network` | `none`, or a reach profile (section 5) |
 | `limits` | memory, CPUs, processes and wall clock. A runaway is killed by its memory limit |
-| `user` | `uid:gid`, both above zero |
+| `user` | `uid:gid`, both above zero, and the engine's own uid, so the files a run writes stay the engine's |
 | `rootfs` | read-only unless a path is declared writable |
 | `writable` | tmpfs mounts with a size, for scratch space |
 
-Rules:
+Rules (`bin/environment.py`, built):
 
 - The engine is the only container client. A worker or the manager never sees
   a container socket.
-- The caller supplies only an environment name, an argv and artifact globs.
-  Everything else comes from the signed spec.
+- The caller supplies only an environment name, an argv and a work directory.
+  Everything else comes from the signed spec, and the arm ruling is verified
+  before every run: an edited environment is an unsigned program.
+- No network, a read-only rootfs, every capability dropped, no new privileges,
+  a size-capped log, and memory, CPU, process and wall limits. A runaway is
+  killed by its memory limit.
 - A spec that mounts the host root, a container socket, a system directory or
   anything outside its own list refuses at validate.
 - Every run writes a receipt into the hash-chained call log: environment, image
-  digest, argv hash, exit code, duration, artifact hashes.
+  digest, argv hash, exit code, duration, runtime. Artifact hashes are not
+  built yet.
 - Signing a new environment spec is reserved to the owner. Once per environment.
+- `operator environment validate <dir>` checks the charter;
+  `operator environment run <dir> --env NAME -- <cmd...>` is the door.
 
 Rows gain `env = "<name>"`. A `run` row with an environment executes its check
 there, with the candidate export and the pinned oracle mounted.
 
-One door serves three callers: a row's check, the manager's `env.run` verb, and
-the worker itself. A worker's jail gets an environment socket served by the
-engine, so a worker can iterate against the real environment mid-task without
-ever holding the daemon. Every call is validated the same way, logged the same
+One door serves three callers: a row's check (built), the manager's `env.run`
+verb (M4), and the worker itself (next slice). A worker's jail will get an
+environment socket served by the engine, so a worker can iterate against the
+real environment mid-task without ever holding the daemon. Every call is validated the same way, logged the same
 way and capped by the seat's purse. A seat names the environments it may call
 with `env = ["tests"]`; the container sees only what the worker stages into its
 work directory, never the worker's repository.
@@ -407,7 +415,7 @@ each row by delegation.
 | # | Milestone | Un-rails | Status |
 |---|---|---|---|
 | M0 | Charter law | the signed plan | this document |
-| M1 | Environments | container and GPU work | building |
+| M1 | Environments | container and GPU work | first slice built: the charter, the door, `env` rows. The worker socket is next |
 | M2 | Reach | network, shell, read | open |
 | M3 | Evidence | contract authoring as a precondition | open |
 | M4 | The manager | triage seat becomes executive | open |
