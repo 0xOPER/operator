@@ -30,9 +30,23 @@ usd = 6.0                           # reservations settle against this, ALWAYS
 
 [seat.reviewer]
 role = "roles/reviewer.md"
-adapter = "stub"
+adapter = "codex"
 write = ["docs/**"]
+
+[seat.op]                           # optional; required for `--autonomy unattended`
+role = "roles/op.md"
+adapter = "claude-code"             # must be an adapter with report_mount (claude-code, opencode, zcode)
+[seat.op.budget]
+usd = 2.0
 ```
+
+### The operator seat (`[seat.op]`)
+
+Shipped templates default to `adapter = "stub"` and omit `[seat.op]`. Starting a run with `--autonomy unattended` refuses unless `[seat.op]` is defined with an `adapter` (in `bin/run.py`, `cmd_operate` refuses with `no op seat on this team`).
+
+- **Empty repo grants:** `[seat.op]` carries no `write` grants; its attempts are never sealed, imported, or promoted into the repository.
+- **Adapter requirement:** `[seat.op]` delivers its directive JSON via `/w/repo/report-out.json`, so choose an adapter whose manifest defines `report_mount` (`claude-code`, `opencode`, or `zcode`; `codex` and `stub` do not mount it).
+- **Bounded effect:** The engine consumes only `report.json` from an operator turn and accepts at most 8 whitelisted directives per turn from 5 verbs: `retry`, `reply`, `resolve`, `cancel`, `stop`. Host guards block `resolve` (and autonomous `retry` on `review_red`) for protected escalations (`halt`, `stop`, `security`, `ruling`, `gate_refused`, `retry_cap`, `review_red`) and enforce `MAX_TASK_RETRIES = 3`.
 
 Every seat key: `role`, `adapter`, `human`, `write`, `read`, `see`, `network`,
 `shell`, `mcp`, `memory`, `skills`, `budget`, `model`, `repo_context`. The

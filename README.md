@@ -161,24 +161,36 @@ scripts/docker-operator.sh doctor
 
 ## Running an Overnight Job
 
-Once you have tried the demo, setting up your own unattended run takes four steps (see [docs/quickstart.md](docs/quickstart.md) and [docs/authoring.md](docs/authoring.md) for the full walkthrough):
+Once you have tried the demo, setting up an unattended run takes five steps (see [docs/quickstart.md](docs/quickstart.md) and [docs/authoring.md](docs/authoring.md) for the full walkthrough):
 
 ```bash
 # 1. Scaffold a team + contract from a template (feature, plan, or research)
 bin/operator.sh init my-job --template feature
+
+# 2. Edit my-job/team.toml before validating:
+#    - Replace `adapter = "stub"` with real CLIs from two model families (e.g. claude-code & codex)
+#    - Add a [seat.op] section (role, adapter with report_mount such as claude-code/opencode, budget)
+#      required by `--autonomy unattended`, and probe each CLI:
+bin/operator.sh spawn preflight claude-code
+bin/operator.sh spawn preflight codex
 bin/operator.sh team validate my-job
 bin/operator.sh contract validate my-job
 
-# 2. Sign your plan, file scopes, and budgets once with a passphrase-protected SSH key
+# 3. Sign your plan, file scopes, and budgets once with a passphrase-protected SSH key
 ssh-keygen -t ed25519 -N 'a passphrase you keep' -f ~/operator-key
 bin/operator.sh init my-job --key ~/operator-key
-CONTRACT_REPO=/path/to/your-repo bin/operator.sh ruling sign my-job --kind arm --key ~/operator-key
+CONTRACT_REPO=/path/to/your-repo bin/operator.sh ruling sign my-job --kind arm \
+  --waive budget=advisory --key ~/operator-key
 
-# 3. Start and run the unattended overnight loop (API keys stay host-side in broker.py)
+# 4. Start and run the unattended overnight loop (real API keys stay host-side in broker.py)
 bin/operator.sh run start my-job --run r1 --autonomy unattended --from /path/to/your-repo
-bin/operator.sh run loop my-job --run r1
+OPERATOR_ANTHROPIC_ORIGIN=https://api.example.com \
+OPERATOR_ANTHROPIC_CREDENTIAL="$YOUR_ANTHROPIC_KEY" \
+OPERATOR_OPENAI_ORIGIN=https://api.example.com \
+OPERATOR_OPENAI_CREDENTIAL="$YOUR_OPENAI_KEY" \
+  bin/operator.sh run loop my-job --run r1
 
-# 4. In the morning: inspect the live panel or export the signed run report
+# 5. In the morning: inspect the live panel or print the claims summary
 bin/operator.sh panel serve --run r1         # http://127.0.0.1:8765
 bin/operator.sh run report my-job --run r1
 ```
