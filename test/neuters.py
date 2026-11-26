@@ -1488,4 +1488,7 @@ NEUTERS = [
      '"--unshare-pid", "--unshare-cgroup-try", "--unshare-net"',
      '"--unshare-pid", "--unshare-cgroup-try"',
      "bin/contract.py --first-level"),
+    ("RN-operate-cross-refused", RN,
+     '                    spawn_mod.Refused, spawn_mod.Void,',
+     '                    Refused,'),
 ]

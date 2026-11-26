@@ -1370,9 +1370,21 @@ def cmd_tick(prog, run_name):
                 log_event(rd, "operate-backoff",
                           detail=f"backing off until {int(backoff_until)}")
             elif live2 and needs_op and not fresh_fail:
+                import contract as _ct_mod
+                import review as _rv_mod
+                import ruling as _rl_mod
+                import team as _tm_mod
+                _op_errs = (
+                    Refused, Void,
+                    spawn_mod.Refused, spawn_mod.Void,
+                    _rv_mod.Refused, _rv_mod.Void,
+                    _ct_mod.Finding, _ct_mod.Void,
+                    _rl_mod.Refused, _rl_mod.Void,
+                    _tm_mod.Finding, _tm_mod.Void,
+                )
                 try:
                     cmd_operate(run_name)
-                except (Refused, Void) as e:
+                except _op_errs as e:
                     log_event(rd, "operate-skip", detail=str(e)[:200])
                 except SystemExit as e:
                     # a lock contention (rc 3) or a verb refusal (rc 2) from a
@@ -2287,15 +2299,22 @@ def cmd_gc(run_name, as_json):
 
 
 def _prog_of(rd):
-    if not os.path.isdir(os.path.join(rd, "attempts")):
-        return None
-    for n in sorted(os.listdir(os.path.join(rd, "attempts")), reverse=True):
-        m = os.path.join(rd, "attempts", n, "attempt.json")
-        if os.path.isfile(m):
-            try:
-                return json.load(open(m, encoding="utf-8")).get("prog")
-            except (ValueError, OSError):
-                continue
+    if os.path.isdir(os.path.join(rd, "attempts")):
+        for n in sorted(os.listdir(os.path.join(rd, "attempts")), reverse=True):
+            m = os.path.join(rd, "attempts", n, "attempt.json")
+            if os.path.isfile(m):
+                try:
+                    p = json.load(open(m, encoding="utf-8")).get("prog")
+                    if p:
+                        return p
+                except (ValueError, OSError):
+                    continue
+    rj = os.path.join(rd, "run.json")
+    if os.path.isfile(rj):
+        try:
+            return json.load(open(rj, encoding="utf-8")).get("program")
+        except (ValueError, OSError):
+            pass
     return None
 
 
@@ -3780,6 +3799,32 @@ def selftest():
         finally:
             os.environ.pop("OPERATOR_BROKER_ORIGIN", None)
             os.environ.pop("OPERATOR_BROKER_CREDENTIAL", None)
+        # OP6 (F2) spawn_mod.Refused in cmd_operate (exhausted op budget) logs operate-skip without killing cmd_loop
+        f2_prog = spawn_mod._program(
+            home, "p-f2",
+            team_body=(
+                'schema = 1\nname = "tf2"\nmax_parallel = 2\n'
+                '[seat.h]\nhuman = true\n'
+                '[seat.op]\nrole = "roles/w.md"\nadapter = "stub"\n[seat.op.budget]\nusd = 0.5\n'
+            ),
+            contract_body=(
+                'schema = 2\n[[row]]\nid = "r.sign"\nstage = "s"\ndesc = "owner signoff"\n'
+                'kind = "ruling"\nseat = "h"\nreviewer = "h"\n'
+            ),
+        )
+        f2_rd = run_dir_of("op-f2")
+        spawn_mod.cmd_init_run(f2_rd, None)
+        _save_run(f2_rd, {"state": "running", "autonomy": "unattended",
+                          "program": f2_prog, "run": "op-f2", "started_at": time.time()})
+        with open(os.path.join(f2_rd, "ledger.tsv"), "w", encoding="utf-8") as f:
+            f.write("op-pre\top\toperate\t0.5000\tsettled\t2026-11-26T00:00:00Z\n")
+        os.makedirs(os.path.join(f2_rd, "escalations"), exist_ok=True)
+        with open(os.path.join(f2_rd, "escalations", "20261126T000001Z-episode.md"), "w", encoding="utf-8") as f:
+            f.write("# escalation: episode\n\ntransient worker failure\n")
+        f2_rc = cmd_loop(f2_prog, "op-f2", interval=0.05, max_ticks=1)
+        f2_ev = [e for e in read_events(f2_rd) if e.get("kind") == "operate-skip"]
+        check(f2_rc == 0 and len(f2_ev) == 1 and "exhausted" in str(f2_ev[0].get("detail", "")),
+              f"OP6 exhausted op budget logs operate-skip and keeps loop alive: rc={f2_rc} ev={f2_ev}")
         shutil.rmtree(_opd, ignore_errors=True)
 
         print(f"selftest: OK ({ok[0]} checks)" if ok[0] and not bad[0] else "selftest: FAIL")
@@ -3936,7 +3981,11 @@ def first_level():
         rd_l = run_dir_of("rl")
         check(bool(re.fullmatch(r"[0-9a-f]{16}", load_run(rd_l).get("arm_hash", ""))),
               f"FL2 cmd_start records verified 16-hex arm_hash: {load_run(rd_l).get('arm_hash')!r}")
-        out_l = cmd_tick(prog_l, "rl")
+        try:
+            out_l = cmd_tick(prog_l, "rl")
+        except SystemExit as e:
+            out_l = {"dispatched": []}
+            check(False, f"FL2 cmd_tick exited {e.code}")
         check(load_run(rd_l).get("state") == "done",
               f"FL2 tick writes real done state when all tasks pass: {load_run(rd_l).get('state')}")
         check(isinstance(out_l["dispatched"], list)
