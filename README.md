@@ -127,9 +127,9 @@ OPERATOR wraps the coding CLIs you already use—no proprietary agent SDK requir
 No API keys needed. The built-in demo runs offline in under a minute using stub seats, exercises sealed checks and jail refusals, and prints a one-line summary (cleaning up its temp directory unless `--keep` is passed; run `scripts/run-first-level-selftests.sh` for the full live-jail tick/review ladder).
 
 **Requirements:**
-- **Linux (native, recommended):** Python 3.11+, `git`, `bubblewrap` (`bwrap`), `pytest`.
-  *(On Ubuntu 24.04+, allow unprivileged user namespaces via an AppArmor profile for `bwrap` or `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`.)*
-- **macOS:** Docker Desktop, Colima, or OrbStack using the included Linux container wrapper (`scripts/docker-operator.sh`).
+- **Linux (native, recommended):** Python 3.11+, `python3-venv`, `git`, `openssh-client` (`ssh-keygen`), `bubblewrap` (`bwrap`), `pytest`.
+  *(On Ubuntu 24.04+, install the targeted AppArmor `bwrap` profile in [docs/quickstart.md](docs/quickstart.md#0-requirements); temporary `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` works for testing, is system-wide, and resets on reboot.)*
+- **macOS:** Docker Desktop, Colima, or OrbStack using the included Linux container wrapper (`scripts/docker-operator.sh`). Note that nested `bubblewrap` inside the Linux guest VM requires unconfined container flags (`SYS_ADMIN`, `NET_ADMIN`, unconfined seccomp/AppArmor/systempaths), so macOS relies on the hypervisor VM boundary.
 
 ### Linux (Native)
 

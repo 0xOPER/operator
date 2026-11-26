@@ -5,22 +5,51 @@ something refuses, the refusal names its fix -- read the second line.
 
 ## 0. Requirements
 
-- **Linux (native, recommended):** `bubblewrap` (`bwrap --version`). On Ubuntu
-  24.04+, either install a targeted `/etc/apparmor.d/bwrap` `userns` profile or
-  enable unprivileged userns (`sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0`).
+- **Linux (native, recommended):** Python 3.11+, `python3-venv`, `git`,
+  `openssh-client` (`ssh-keygen`), `pytest`, and `bubblewrap` (`bwrap --version`).
+  On Ubuntu 24.04+, unprivileged user namespaces are restricted by AppArmor by
+  default. Install a targeted profile for `bwrap` (recommended, survives reboots):
+
+  ```bash
+  sudo tee /etc/apparmor.d/bwrap >/dev/null <<'EOF'
+  abi <abi/4.0>,
+  include <tunables/global>
+
+  profile bwrap /usr/bin/bwrap flags=(unconfined) {
+    userns,
+    include if exists <local/bwrap>
+  }
+  EOF
+  sudo apparmor_parser -r /etc/apparmor.d/bwrap
+  ```
+
+  *(For quick testing only, `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`
+  also works, but it relaxes the setting system-wide and resets on reboot.)*
 - **macOS (Docker Desktop / Colima / OrbStack VM):** run commands through the
-  included Linux + `bubblewrap` container wrapper (persists state in `0700`
-  `~/.local/state/operator-docker` by default; refused on native Linux unless
-  `--allow-linux-unconfined` is passed because nested `bwrap` requires
-  unconfined container flags inside the Linux guest VM):
+  included Linux + `bubblewrap` container wrapper (`scripts/docker-operator.sh`).
+  Persists state in `0700` `~/.local/state/operator-docker` by default. Because
+  nested `bubblewrap` inside a container needs `CAP_SYS_ADMIN`, `CAP_NET_ADMIN`,
+  and unconfined seccomp/AppArmor/systempaths, the wrapper refuses native Linux
+  unless `--allow-linux-unconfined` is passed (on macOS, the Linux hypervisor VM
+  is the outer boundary):
   ```bash
   scripts/docker-operator.sh               # builds once and runs `demo run`
   scripts/docker-operator.sh doctor        # check environment inside container
   scripts/docker-operator.sh --publish-panel --mount "$PWD" status
   ```
+  To run your own program directory and work repo from macOS, mount both
+  paths into the container and pass the mounted paths positionally (only
+  `/operator-state` persists inside the container image):
+  ```bash
+  scripts/docker-operator.sh --mount "$PWD/myteam:/work/myteam" \
+    --mount "/path/to/work-repo:/work/repo" \
+    init /work/myteam --template feature
+  scripts/docker-operator.sh --mount "$PWD/myteam:/work/myteam" \
+    team validate /work/myteam
+  ```
 - An agent CLI if you want real workers (`claude`, `codex`, `opencode`, or
   `zcode` on `PATH` or under `OPERATOR_CLI_DIR/bin`). Without one, the `stub`
-  adapter still walks the whole engine.
+  adapter still walks the engine using `plans/<task>.json`.
 
 ## 1. The demo (under a minute)
 
@@ -77,11 +106,14 @@ CONTRACT_REPO=/path/to/work-repo bin/operator.sh ruling sign myteam --kind arm -
 ```
 
 Pass `CONTRACT_REPO` when signing so the closure pins the work repository's base
-commit (and pass `--waive same-family-review` only if your worker and reviewer
-intentionally share the same model family). The key refuses to be plain
-(`-N ''`) -- a signing key without a passphrase protects nothing that outlives a
-session. Signing prompts for the passphrase; `ssh-agent` or `$SSH_ASKPASS`
-carries it if you'd rather not type it each time.
+commit. If your team defines a `budget.usd` cap (all shipped templates do),
+pass `--waive budget=advisory` (the cap gates the next reservation; an in-flight
+attempt may overshoot up to its reservation/turn cap, and USD is estimated from
+`broker.py`'s model price table). Pass `--waive same-family-review` only if your
+worker and reviewer intentionally share the same model family. The key refuses
+to be plain (`-N ''`) -- a signing key without a passphrase protects nothing
+that outlives a session. Signing prompts for the passphrase; `ssh-agent` or
+`$SSH_ASKPASS` carries it if you'd rather not type it each time.
 
 ## 5. Run it
 
@@ -110,6 +142,42 @@ verdicts in its own turn; a HUMAN reviewer waits on the approvals screen),
 and promote. Repeat `tick` until `next` says done. Stub seats take their
 steps from `plans/<task>.json` in the program dir (engine-side authoring,
 never worker input); real CLI seats take the composed brief.
+
+## 5a. Real CLIs, turn caps, and the pager
+
+Before spending API credits on a real CLI run:
+
+1. **Preflight each adapter binary:**
+   ```bash
+   bin/operator.sh spawn preflight claude-code   # probes binary + version floor (--strict for exact pin)
+   bin/operator.sh spawn preflight codex
+   ```
+   Tested CLI versions in `config/adapters/*.toml`: `claude-code` (`2.1.318`,
+   `tool_fencing = "hooked"`), `codex` (`0.166.0`, `"unfenced"`), `opencode`
+   (`1.19.5`, `"unfenced"`), and `zcode` (`0.17.1`, `"hooked"`, experimental /
+   not run in CI). Inside the jail, wrapped CLIs run with their own internal
+   guardrails relaxed because the `bubblewrap` jail, host API broker, and Git
+   import gate enforce confinement externally.
+2. **Provider credentials (host-side only):** Set the provider origin and key
+   on the host when launching `run tick` or `run loop`; `run.py` auto-supervises
+   `broker.py` on `/tmp/opb-*/b.sock` so real keys never enter the jail:
+   - Anthropic: `OPERATOR_ANTHROPIC_ORIGIN`, `OPERATOR_ANTHROPIC_CREDENTIAL`
+   - OpenAI: `OPERATOR_OPENAI_ORIGIN`, `OPERATOR_OPENAI_CREDENTIAL`
+   - ZCode (`zcode`): `OPERATOR_ZAI_ORIGIN`, `OPERATOR_ZAI_CREDENTIAL`
+   - Single-origin fallback: `OPERATOR_BROKER_ORIGIN`, `OPERATOR_BROKER_CREDENTIAL`
+3. **Per-attempt turn ceilings:** Override the default host-side per-attempt
+   broker limits if needed:
+   - `OPERATOR_TURN_USD_CAP` (default `10.00`, estimated from `broker.py`'s model price table)
+   - `OPERATOR_TURN_INPUT_CAP` (default `500000` input tokens)
+4. **Unattended `[seat.op]` & pager notifications:** Add a `[seat.op]` block to
+   `team.toml` using an adapter that sets `report_mount` (`claude-code`,
+   `opencode`, or `zcode`; see [authoring.md](authoring.md)). On a halt or
+   all-escalated pause, the engine writes a row to `<run>/pages.tsv` by default;
+   set `OPERATOR_PAGER_COMMAND` to pipe the alert message to an external notifier
+   on stdin.
+5. **Disk space & cleanup:** Runs live under `$OPERATOR_HOME` (default
+   `~/.local/state/operator`), and each run holds a full clone of the work
+   repository. Reclaim finished runs with `bin/operator.sh run gc <run>`.
 
 ## 6. The loop in under a minute (the demo)
 
