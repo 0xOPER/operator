@@ -1,0 +1,26 @@
+name: Feature Request
+description: Propose a new adapter, check type, or workflow improvement.
+title: "[feat]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What workflow or overnight run failure are you trying to solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How should OPERATOR behave, and what boundary or verification guarantee should hold?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any workarounds or alternative designs you considered.
+    validations:
+      required: false

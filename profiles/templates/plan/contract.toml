@@ -1,0 +1,37 @@
+# The plan template: goals become ruled rows BEFORE work starts, and the
+# auditor's forge test keeps the plan honest -- a goal whose check a hostile
+# author can hollow passes nothing here. Copy this to a program, replace the
+# sample rows with real goals, and the seats come from its team.
+schema = 2
+
+[[row]]
+id = "goals.lint"
+stage = "plan"
+desc = "every goal is a row with a check that can FAIL: no trivial cmds, no scaffold descs"
+kind = "run"
+seat = "planner"
+reviewer = "auditor"
+cmd = "python3 -I $PROG/checks/goals_lint.py plan.md"
+oracle = ["checks"]
+control = "goals.control"
+
+[[row]]
+id = "goals.control"
+stage = "plan"
+desc = "the honest plan passes its own goal checks (the twin: a forge row whose control can't pass proves nothing)"
+kind = "run"
+seat = "planner"
+reviewer = "auditor"
+cmd = "python3 -I $PROG/checks/goals_forge.py plan.md --control"
+oracle = ["checks"]
+
+[[row]]
+id = "goals.forge"
+stage = "plan"
+desc = "the auditor's forge test: a known-hollow goal planted in the plan must fail the lint, or the plan's checks are hollow"
+kind = "run"
+seat = "planner"
+reviewer = "auditor"
+cmd = "python3 -I $PROG/checks/goals_forge.py plan.md --plant-forge"
+oracle = ["checks"]
+control = "goals.control"
