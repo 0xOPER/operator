@@ -6,7 +6,7 @@ There's no compatibility promise before 1.0. Semver starts there. Each seam says
 |---|---|---|---|
 | `bin/operator.sh` verbs | 0 | `status`, `doctor`, `rules`, `help`, `--version`, `--selftest`, `<tool>` passthrough (`--json` forwarded to `status`, `doctor`, `rules`) | Removing a verb, or changing what an exit code means |
 | Tool verbs | 0 | What each tool's header lists across `bin/` and `scripts/` (`bin/operator.sh help` lists every entry point) | Removing a verb |
-| Exit codes | 0 | 0 ok, 1 refused or missing, 2 usage or VOID, 3 advance/run lock busy, or call-log's lock busy. `test/wave-job.sh` uses 3 for receipts owed, and `call-log.sh record` exits with the command's own code | Any change |
+| Exit codes | 0 | 0 ok, 1 refused or missing, 2 usage or VOID, 3 a lock is held (advance/run lock busy, or call-log's lock busy), and `call-log.sh record` exits with the command's own code | Any change |
 | `OPERATOR_HOME` | 0 | State root. Default `$XDG_STATE_HOME/operator`, else `~/.local/state/operator` | Changing the default without a migration |
 | `OPERATOR_WORKSPACES` | 0 | Colon-separated program roots. Default `$OPERATOR_HOME/workspaces` | Changing the separator or default |
 | `CALL_LOG_FILE` | 0 | Call log path. Default `$OPERATOR_HOME/call-log.tsv` | Changing the default without a migration |

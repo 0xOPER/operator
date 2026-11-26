@@ -8,6 +8,7 @@
 .github/workflows/scorecard.yml
 .gitignore
 AGENTS.md
+CHANGELOG.md
 CLAIMS.md
 CLAUDE.md
 CONTRIBUTING.md

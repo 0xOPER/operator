@@ -10,6 +10,7 @@
 !/test/
 !/.gitignore
 !/AGENTS.md
+!/CHANGELOG.md
 !/CLAUDE.md
 !/CONTRIBUTING.md
 !/INTERFACES.md
@@ -17,8 +18,6 @@
 !/SECURITY.md
 !/VERSION
 !/keep-list
-!/keep-list.private
-!/forward-port.tsv
 !/LIMITATIONS
 !/CLAIMS.md
 !/claims-rekor.json
