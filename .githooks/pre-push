@@ -179,7 +179,7 @@ while [ "$idx" -lt "${#lshas[@]}" ]; do
     exit 2
   }
   if [ -f "$ROOT/scripts/release-lint.py" ]; then
-    if ! rl_out=$(run_bounded 30 python3 -I "$ROOT/scripts/release-lint.py" --root "$TMP_EXP" "${tb_args[@]}" 2>&1); then
+    if ! rl_out=$(run_bounded 30 python3 -I "$ROOT/scripts/release-lint.py" --root "$TMP_EXP" "${tb_args[@]+"${tb_args[@]}"}" 2>&1); then
       echo "pre-push: REFUSED -- release-lint failed on commit $commit_sha:" >&2
       printf '%s\n' "$rl_out" >&2
       echo "  fix: remove flagged content/filenames and amend/rebase the commit" >&2
@@ -188,7 +188,7 @@ while [ "$idx" -lt "${#lshas[@]}" ]; do
     run_bounded 10 git log --no-walk --format='%an <%ae>%n%cn <%ce>%n%B' "${revs[@]}" > "$TMP_PATCH/commits.txt"
     run_bounded 10 git for-each-ref refs/tags --format='%(refname)%0a%(taggername) %(taggeremail)%0a%(contents)' >> "$TMP_PATCH/commits.txt"
     run_bounded 15 git log --no-walk -p --format= "${revs[@]}" -- . ':!test/lint/tier-a.tsv' > "$TMP_PATCH/patches.txt"
-    if ! rlp_out=$(run_bounded 30 python3 -I "$ROOT/scripts/release-lint.py" --root "$TMP_PATCH" "${tb_args[@]}" 2>&1); then
+    if ! rlp_out=$(run_bounded 30 python3 -I "$ROOT/scripts/release-lint.py" --root "$TMP_PATCH" "${tb_args[@]+"${tb_args[@]}"}" 2>&1); then
       echo "pre-push: REFUSED -- release-lint failed on outgoing commit messages or patches:" >&2
       printf '%s\n' "$rlp_out" >&2
       echo "  fix: rewrite outgoing commit history so neither messages nor diffs contain private/disallowed tokens" >&2

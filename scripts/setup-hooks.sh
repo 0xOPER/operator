@@ -47,13 +47,23 @@ selftest() {
   GIT_COMMITTER_NAME="$WANT_NAME" GIT_COMMITTER_EMAIL="$WANT_EMAIL" \
   git -C "$T/work" -c commit.gpgsign=false commit -qm "seed base" || exit 2
 
+  # When /bin/bash is older than 4.4 (e.g. macOS stock bash 3.2), place it first on
+  # PATH so #!/usr/bin/env bash inside the hooks runs under bash < 4.4 and catches
+  # set -u empty-array expansion regressions.
+  hook_path="$PATH"
+  if [ -x /bin/bash ] && /bin/bash -c 'exit $(( (BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4)) ? 0 : 1 ))' 2>/dev/null; then
+    mkdir -p "$T/oldbash"
+    ln -s /bin/bash "$T/oldbash/bash"
+    hook_path="$T/oldbash:$PATH"
+  fi
+
   # Install hooks via setup-hooks.sh
-  out=$(OPERATOR_TIER_B=/nonexistent "$T/work/scripts/setup-hooks.sh" 2>&1); r=$?
+  out=$(PATH="$hook_path" OPERATOR_TIER_B=/nonexistent "$T/work/scripts/setup-hooks.sh" 2>&1); r=$?
   hp=$(git -C "$T/work" config --get core.hooksPath || true)
   { [ "$r" -eq 0 ] && [ "$hp" = ".githooks" ]; } || { echo "FAIL install: rc=$r hp=$hp $out" >&2; rc=1; }
 
   wgit() {
-    OPERATOR_TIER_B=/nonexistent git -C "$T/work" "$@"
+    PATH="$hook_path" OPERATOR_TIER_B=/nonexistent git -C "$T/work" "$@"
   }
 
   # 1. Wrong identity refused (names fix), then accepted after --configure-identity

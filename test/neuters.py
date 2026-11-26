@@ -1472,4 +1472,8 @@ NEUTERS = [
      '[ "$bad" -eq 0 ] || exit 1',
      'true',
      "scripts/setup-hooks.sh --selftest"),
+    ("HK-tierb-opt", ".githooks/pre-push",
+     'if [ -f "$tb" ]; then\n  tb_args=(--tier-b "$tb")\nfi',
+     'tb_args=(--tier-b "$tb")',
+     "scripts/setup-hooks.sh --selftest"),
 ]
