@@ -42,8 +42,8 @@ CI enforces a small set of strict invariants so the repository stays auditable a
 2. **Text-only repository:** `scripts/release-lint.py` rejects binary files (PNG, PDF, archives, etc.), credential-shaped filenames, personal home paths, and accidental private URLs. Vector graphics should be plain UTF-8 `.svg` files.
 3. **Commit identity & attribution law:** CI checks every commit on `main` and every pull request:
    - Commits must carry **no** `Co-authored-by:` trailer (from any author) and no AI/tool attribution lines.
-   - Commits on `main` must be unsigned (`commit.gpgsign=false`) and authored/committed under the project identity (`HashedViking <6432677+HashedViking@users.noreply.github.com>`).
-   - **How external pull requests land:** External contributors open normal PRs from their fork (without `Co-authored-by:` trailers). Once approved and green, maintainers squash-merge the change onto `main` under the project identity and credit the contributor in the release notes.
+   - Commits on `main` must be unsigned (`commit.gpgsign=false`) and authored/committed under the maintainer's identity (`HashedViking <6432677+HashedViking@users.noreply.github.com>`).
+   - **How external pull requests land:** External contributors open normal PRs from their fork (without `Co-authored-by:` trailers). Once approved and green, maintainers squash-merge the change onto `main` under the maintainer's identity and credit the contributor in the release notes.
 4. **Zero-regression lint ratchets:** `test/ratchet.sh` runs pinned `shellcheck` and `ruff` versions via `pipx` against `test/ratchet.tsv`. Counts may only stay flat or move down (if you fix an existing warning, lower the baseline in `test/ratchet.tsv` in the same PR).
 5. **Mutation sensitivity & CI suites:** Every `--selftest` tool in `bin/` and `scripts/` must be covered by `test/neuters.py` (`0` allowed survivors against reduced selftests). CI also runs secret scanners (`gitleaks`, `trufflehog`), `zizmor`, CodeQL, OpenSSF Scorecard, and jailed CLI conformance cells (`claude-code`, `codex`, `opencode`).
 6. **Workflow security:** All GitHub Actions workflows in `.github/workflows/` must pin actions by full 40-character commit SHA, declare minimal `permissions:`, set `persist-credentials: false`, and pass `zizmor --offline .github/workflows`.
@@ -59,11 +59,11 @@ Install the repository's tracked hooks (`.githooks/pre-commit`, `commit-msg`, an
 scripts/setup-hooks.sh --configure-identity
 ```
 
-`pre-commit` checks staged files in a few seconds (keep-list parity, no symlinks, project identity, Tier-A lint, syntax/SVG checks, and `shellcheck` / `ruff` when installed). `commit-msg` enforces the no-attribution trailer rule, and `pre-push` mirrors CI's lint job over outgoing commits (plus the `bwrap` cleanroom selftests on Linux). `bin/operator.sh doctor` reports whether the hooks are active.
+`pre-commit` checks staged files in a few seconds (keep-list parity, no symlinks, commit identity, Tier-A lint, syntax/SVG checks, and `shellcheck` / `ruff` when installed). `commit-msg` enforces the no-attribution trailer rule, and `pre-push` mirrors CI's lint job over outgoing commits (plus the `bwrap` cleanroom selftests on Linux). `bin/operator.sh doctor` reports whether the hooks are active.
 
 ## Pull Request Process
 
-The repository's commits carry a single project identity, by design. Pull requests from outside are squash-merged under that identity, and contributors are credited by name in the release notes. Do not add `Co-authored-by:` or tool-attribution trailers; CI rejects them.
+The repository's commits carry a single identity, the maintainer's, by design. Pull requests from outside are squash-merged under that identity, and contributors are credited by name in the release notes. Do not add `Co-authored-by:` or tool-attribution trailers; CI rejects them.
 
 1. Fork `0xOPER/operator` and create a focused branch from `main`.
 2. Keep changes scoped, omit `Co-authored-by:` and tool-attribution trailers, and include selftest coverage for new behavior or bug fixes.
