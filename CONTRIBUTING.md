@@ -4,7 +4,7 @@ Thanks for your interest in contributing to OPERATOR. Every pull request runs th
 
 ## Prerequisites
 
-- **Linux (native, recommended):** Python 3.11+, `python3-venv`, `git`, `openssh-client` (`ssh-keygen`), `bubblewrap` (`bwrap`), `pytest`, and `pipx` (required by `test/ratchet.sh` and `zizmor`).
+- **Linux (native, recommended):** Python 3.11+, `python3-venv`, `git`, `openssh-client` (`ssh-keygen`), `bubblewrap` (`bwrap`), `pytest`, and `pipx` (needed by `test/ratchet.sh` for pinned `shellcheck` and `ruff`, and by `zizmor`; having `shellcheck` and `ruff` installed also enables them in the `pre-commit` hook).
   - On Ubuntu 24.04+, allow unprivileged user namespaces for `bubblewrap` via a targeted AppArmor profile (preferred) or temporary `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` (system-wide, resets on reboot); see [docs/quickstart.md](docs/quickstart.md).
 - **macOS:** Use a Linux VM (Colima, OrbStack, or Docker Desktop) with `scripts/docker-operator.sh` or run tests inside your Ubuntu VM.
 
@@ -49,9 +49,23 @@ CI enforces a small set of strict invariants so the repository stays auditable a
 6. **Workflow security:** All GitHub Actions workflows in `.github/workflows/` must pin actions by full 40-character commit SHA, declare minimal `permissions:`, set `persist-credentials: false`, and pass `zizmor --offline .github/workflows`.
 7. **`CLAIMS.md` anchor:** Do not edit `CLAIMS.md` in regular PRs; its SHA-256 hash is anchored in Sigstore Rekor (`claims-rekor.json`) and verified offline by `scripts/verify-rekor.py --selftest`.
 
+The same checks run locally before every commit and push once you install the repository's Git hooks below.
+
+### Local Git Hooks
+
+Install the repository's tracked hooks (`.githooks/pre-commit`, `commit-msg`, and `pre-push`) and configure the required commit identity in this clone:
+
+```bash
+scripts/setup-hooks.sh --configure-identity
+```
+
+`pre-commit` checks staged files in a few seconds (keep-list parity, no symlinks, project identity, Tier-A lint, syntax/SVG checks, and `shellcheck` / `ruff` when installed). `commit-msg` enforces the no-attribution trailer rule, and `pre-push` mirrors CI's lint job over outgoing commits (plus the `bwrap` cleanroom selftests on Linux). `bin/operator.sh doctor` reports whether the hooks are active.
+
 ## Pull Request Process
 
+The repository's commits carry a single project identity, by design. Pull requests from outside are squash-merged under that identity, and contributors are credited by name in the release notes. Do not add `Co-authored-by:` or tool-attribution trailers; CI rejects them.
+
 1. Fork `0xOPER/operator` and create a focused branch from `main`.
-2. Keep changes scoped, omit `Co-authored-by:` trailers, and include selftest coverage for new behavior or bug fixes.
+2. Keep changes scoped, omit `Co-authored-by:` and tool-attribution trailers, and include selftest coverage for new behavior or bug fixes.
 3. Update `keep-list` (and `.gitignore` for new top-level entries) if you added or removed any files.
-4. Open a PR using the repository template and wait for all CI, CodeQL, scanner, and conformance checks to pass. Maintainers will squash-merge accepted PRs under the project identity with credit in the release notes.
+4. Open a PR using the repository template and wait for all CI, CodeQL, scanner, and conformance checks to pass.
