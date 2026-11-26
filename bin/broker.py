@@ -10,6 +10,10 @@ credential, and streams the provider's SSE answer straight back. The jail never
 holds a usable key and never names a host; the broker is the only thing that
 does (the ruling: broker, not proxy -- control stays engine-side).
 
+Headers cross the broker only as clean wire text -- a fold or a control byte
+never rides, either way -- the origin's headers reach the jail only by an
+allowlist, and the body's frame is the one the broker itself read by.
+
 One row per completed request lands in the broker log: time, route, status,
 upstream bytes, and the usage tokens the stream itself reported.
 
@@ -168,6 +172,35 @@ def _verify_client_seat(headers, seat_key):
     return ok_s, seat_s
 
 
+# The wire's law for a header, both ways: clean text is a token name (RFC 9110
+# tchar) and a value of HTAB and printable ASCII. http.client hands a folded value
+# over with its CR or LF inside ("one\r\n two") and a NUL or any other control byte
+# as-is, so "parsed" is not "clean".
+HEADER_NAME_RE = re.compile(r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+")
+HEADER_VALUE_RE = re.compile(r"[\x20-\x7e\t]*")
+# ...and the origin's headers reach the jail only by this allowlist: what a CLI
+# reads back (the content type, its retry and rate-limit hints, a request id to
+# quote). A second Server, Set-Cookie, Location and the framing headers the broker
+# sets itself all stop here.
+FORWARDED_HEADERS = ("content-type", "retry-after", "retry-after-ms",
+                     "x-should-retry", "request-id", "x-request-id")
+FORWARDED_HEADER_PREFIXES = ("anthropic-ratelimit-", "x-ratelimit-", "openai-")
+
+
+def clean_header(k, v):
+    """True when both halves are clean wire text: no CR, LF, NUL or any other
+    control byte, and a name a client's parser reads as one token."""
+    return bool(HEADER_NAME_RE.fullmatch(k) and HEADER_VALUE_RE.fullmatch(v))
+
+
+def forwarded_response_header(k, v):
+    """True when an origin header may cross to the jail: clean, and on the
+    allowlist."""
+    lk = k.lower()
+    return clean_header(k, v) and (lk in FORWARDED_HEADERS
+                                   or lk.startswith(FORWARDED_HEADER_PREFIXES))
+
+
 def log_row(path, log, **kv):
     for opt_k in ("seat", "attempt", "model", "cost_usd", "client_gone"):
         if kv.get(opt_k) is None:
@@ -308,6 +341,12 @@ class Handler(BaseHTTPRequestHandler):
                                         "accept-encoding", "proxy-authorization",
                                         "host", "content-length",
                                         "connection", "transfer-encoding")}
+        # a client header carrying a fold or a control byte is a smuggling shape,
+        # not a turn: the origin never sees it
+        if not all(clean_header(k, v) for k, v in headers.items()):
+            self._refuse(400, "the broker carries clean headers only")
+            log_row(path, self.server.log, status=400)
+            return
         # BOTH spellings: the anthropic wire's own header is x-api-key (what
         # claude sends; some origins' edges REQUIRE it and 404 Bearer-only),
         # and Bearer rides along for the origins that prefer it
@@ -382,9 +421,8 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 self.send_response(resp.status)
                 for k, v in resp.getheaders():
-                    if k.lower() in ("transfer-encoding", "connection", "content-length"):
-                        continue
-                    self.send_header(k, v)
+                    if forwarded_response_header(k, v):
+                        self.send_header(k, v)
                 self.send_header("Content-Length", str(len(raw)))
                 self.end_headers()
                 self.wfile.write(raw)
@@ -397,29 +435,28 @@ class Handler(BaseHTTPRequestHandler):
                     seat=client_seat, attempt=client_attempt,
                     model=req_model or None, cost_usd=cost_usd)
             return
-        chunked = False
-        length = None
-        for k, v in resp.getheaders():
-            lk = k.lower()
-            if lk in ("transfer-encoding", "connection", "content-length"):
-                if lk == "transfer-encoding" and "chunked" in v.lower():
-                    chunked = True
-                elif lk == "content-length":
-                    length = v
-                continue
+        # the frame the client gets is the frame http.client itself reads by -- its
+        # chunked flag and the ONE length it honors -- never the origin's header text:
+        # text forwarded as-is can differ from the bytes that follow (a second, a padded
+        # or a signed Content-Length), and the surplus would stand in front of the
+        # client as a response of its own
+        chunked = resp.chunked
+        length = resp.length
         try:
             try:
                 self.send_response(resp.status)
                 for k, v in resp.getheaders():
-                    if k.lower() in ("transfer-encoding", "connection", "content-length"):
-                        continue
-                    self.send_header(k, v)
+                    if forwarded_response_header(k, v):
+                        self.send_header(k, v)
                 if chunked:
                     self.send_header("Transfer-Encoding", "chunked")
-                elif length:
+                elif length is not None:
                     # the origin framed it with a length: the client gets the same
                     # frame, or it would wait on the wire for a body that already ended
-                    self.send_header("Content-Length", length)
+                    self.send_header("Content-Length", str(length))
+                else:
+                    # the origin framed its body by closing: the client gets that frame
+                    self.send_header("Connection", "close")
                 self.end_headers()
             except OSError:
                 client_gone = True
@@ -549,6 +586,10 @@ class Handler(BaseHTTPRequestHandler):
                 # a hard abort: the connection ends mid-body, the client's read
                 # fails, and the turn reports failure -- exactly the escalation
                 # the ceiling exists to force
+                self.close_connection = True
+            elif resp.length:
+                # the origin closed short of the length the client was told: the
+                # connection ends here, rather than leaving the client waiting
                 self.close_connection = True
             log_row(path, self.server.log, status=resp.status, out_bytes=sent,
                     usage=usage, capped=True if capped else None,
@@ -1211,6 +1252,222 @@ def selftest():
         p_omp.terminate()
         p_bmp2.wait(timeout=10)
         p_omp.wait(timeout=10)
+        # J/K/L a raw origin answering with exact bytes: the broker meets a folded,
+        # a control-bearing, a repeated and a short frame as a hostile origin sends it
+        origin_raw = os.path.join(T, "origin_raw.py")
+        seen_raw = os.path.join(T, "seen.jsonl")
+        open(seen_raw, "wb").close()
+        with open(origin_raw, "w") as f:
+            f.write(
+                "import json, socket, sys, threading, time\n"
+                "seen = sys.argv[1]\n"
+                "sse = b'data: {\"type\":\"message_delta\",\"delta\":{},"
+                "\"usage\":{\"input_tokens\":7,\"output_tokens\":3}}\\n\\n'\n"
+                "forged = b'HTTP/1.1 200 OK\\r\\nContent-Type: application/json\\r\\n"
+                "Content-Length: 2\\r\\n\\r\\n{}'\n"
+                "def head(ct, extra=b'', cl=None):\n"
+                "    out = b'HTTP/1.1 200 OK\\r\\nContent-Type: ' + ct + b'\\r\\n' + extra\n"
+                "    if cl is not None:\n"
+                "        out += b'Content-Length: ' + cl + b'\\r\\n'\n"
+                "    return out + b'\\r\\n'\n"
+                "JSON, SSE = b'application/json', b'text/event-stream'\n"
+                "REPLIES = {\n"
+                "    b'/v1/messages?j=json': head(JSON, b'X-Request-Id: req-j\\r\\n"
+                "retry-after: 3\\r\\nX-Ratelimit-Remaining-Requests: 9\\r\\n"
+                "X-Should-Retry: one\\r\\n two\\r\\nRetry-After: 3\\x00\\r\\n"
+                "Set-Cookie: sid=1\\r\\nX-Injected: yes\\r\\nServer: evil\\r\\n', b'2') + b'{}',\n"
+                "    b'/v1/messages?j=sse': head(SSE, b'anthropic-ratelimit-unified-reset: "
+                "2026-11-26T00:00:00Z\\r\\nx-request-id: req-sse\\r\\nX-Request-Id: a\\r\\n b\\r\\n"
+                "Set-Cookie: sid=2\\r\\nX-Nul: a\\x00b\\r\\n', b'88') + sse,\n"
+                "    b'/v1/messages?k=canonical': head(SSE, cl=b'88') + sse,\n"
+                "    b'/v1/messages?k=padded': head(SSE, cl=b'0088') + sse,\n"
+                "    b'/v1/messages?k=list': head(SSE, cl=b'88, 88') + sse,\n"
+                "    b'/v1/messages?k=dup': head(SSE, b'Content-Length: 160\\r\\n', b'88') + sse + forged,\n"
+                "    b'/v1/messages?k=close': head(SSE) + sse,\n"
+                "    b'/v1/messages?k=short': head(SSE, cl=b'500') + sse,\n"
+                "    b'/v1/messages?l=clean': head(JSON, cl=b'2') + b'{}',\n"
+                "}\n"
+                "srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n"
+                "srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n"
+                "srv.bind(('127.0.0.1', 0)); srv.listen(16)\n"
+                "print(srv.getsockname()[1], flush=True)\n"
+                "def serve():\n"
+                "    while True:\n"
+                "        c, _ = srv.accept()\n"
+                "        def talk(c):\n"
+                "            try:\n"
+                "                c.settimeout(5)\n"
+                "                buf = b''\n"
+                "                while b'\\r\\n\\r\\n' not in buf:\n"
+                "                    d = c.recv(65536)\n"
+                "                    if not d:\n"
+                "                        return\n"
+                "                    buf += d\n"
+                "                hd, _, rest = buf.partition(b'\\r\\n\\r\\n')\n"
+                "                n = 0\n"
+                "                for ln in hd.split(b'\\r\\n')[1:]:\n"
+                "                    k, _, v = ln.partition(b':')\n"
+                "                    if k.strip().lower() == b'content-length':\n"
+                "                        n = int(v.strip() or 0)\n"
+                "                while len(rest) < n:\n"
+                "                    d = c.recv(65536)\n"
+                "                    if not d:\n"
+                "                        return\n"
+                "                    rest += d\n"
+                "                with open(seen, 'a') as sf:\n"
+                "                    sf.write(json.dumps([hd.split(b' ')[1].decode(),"
+                " hd.decode('latin-1')]) + '\\n')\n"
+                "                c.sendall(REPLIES[hd.split(b' ')[1]])\n"
+                "            except OSError:\n"
+                "                pass\n"
+                "            finally:\n"
+                "                c.close()\n"
+                "        threading.Thread(target=talk, args=(c,), daemon=True).start()\n"
+                "threading.Thread(target=serve, daemon=True).start()\n"
+                "time.sleep(600)\n")
+        p_raw = subprocess.Popen([sys.executable, origin_raw, seen_raw],
+                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        port_raw = int(p_raw.stdout.readline().strip())
+        sock_raw = os.path.join(T, "braw.sock")
+        log_raw = os.path.join(T, "braw.jsonl")
+        p_rawbr = subprocess.Popen([sys.executable, broker, "serve", sock_raw,
+                                    f"http://127.0.0.1:{port_raw}", "engine-secret",
+                                    log_raw],
+                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        p_rawbr.stdout.readline()
+
+        def raw_turn(target, extra=b"", wait=2.0):
+            """One raw request over the broker's socket: the bytes back, and whether
+            the broker ended the connection. The read stops at the frame the head
+            announces, so a kept-alive connection costs no wait."""
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.settimeout(wait)
+            s.connect(sock_raw)
+            s.sendall(b"POST " + target + b" HTTP/1.1\r\nHost: localhost\r\n"
+                      b"Content-Type: application/json\r\n" + extra
+                      + b"Content-Length: 2\r\n\r\n{}")
+            out, closed = b"", False
+            try:
+                while True:
+                    d = s.recv(65536)
+                    if not d:
+                        closed = True
+                        break
+                    out += d
+                    hd, sep, body = out.partition(b"\r\n\r\n")
+                    m = re.search(rb"(?im)^content-length:\s*(\d+)", hd) if sep else None
+                    if m and len(body) >= int(m.group(1)):
+                        break
+            except OSError:
+                pass
+            s.close()
+            return out, closed
+
+        def halves(out):
+            """The response's header lines (the request line first), lowercased and
+            whole, and its body: a check names an entire header, never a fragment."""
+            hd, _, body = out.partition(b"\r\n\r\n")
+            return [ln.lower() for ln in hd.split(b"\r\n")], body
+
+        def named(lines, name):
+            """The header lines carrying this name, in order."""
+            pfx = name.encode() + b":"
+            return [ln for ln in lines[1:] if ln.startswith(pfx)]
+
+        def clean_wire(out):
+            """True when the head is clean wire text: every byte is printable ASCII
+            or TAB, CR and LF ride only as a CRLF pair, and no line is a fold."""
+            hd = out.partition(b"\r\n\r\n")[0]
+            return (all(b >= 0x20 or b == 0x09 for b in hd.replace(b"\r\n", b""))
+                    and not any(ln[:1] in (b" ", b"\t") for ln in hd.split(b"\r\n")))
+
+        sse_b = (b'data: {"type":"message_delta","delta":{},'
+                 b'"usage":{"input_tokens":7,"output_tokens":3}}\n\n')
+        forged_b = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}"
+        # J the origin's headers reach the jail only by the law: clean wire text (a
+        # fold or a control byte drops the header, never the turn) and on the
+        # allowlist -- on the JSON path and on the SSE path alike
+        out_j, _ = raw_turn(b"/v1/messages?j=json")
+        lines_j, body_j = halves(out_j)
+        check(body_j == b"{}" and named(lines_j, "content-length") == [b"content-length: 2"],
+              f"J0 the JSON turn rides behind the broker's own frame: {out_j[:200]!r}")
+        check(named(lines_j, "x-request-id") == [b"x-request-id: req-j"]
+              and named(lines_j, "retry-after") == [b"retry-after: 3"]
+              and named(lines_j, "x-ratelimit-remaining-requests")
+              == [b"x-ratelimit-remaining-requests: 9"],
+              f"J1 clean allowlisted headers ride (JSON): {lines_j!r}")
+        check(named(lines_j, "x-should-retry") == [] and clean_wire(out_j),
+              f"J2 a folded or control-bearing value drops its header (JSON): {lines_j!r}")
+        check(named(lines_j, "set-cookie") == [] and named(lines_j, "x-injected") == []
+              and len(named(lines_j, "server")) == 1,
+              f"J3 a header off the allowlist never reaches the jail (JSON): {lines_j!r}")
+        out_j, _ = raw_turn(b"/v1/messages?j=sse")
+        lines_j, body_j = halves(out_j)
+        check(body_j == sse_b
+              and named(lines_j, "anthropic-ratelimit-unified-reset")
+              == [b"anthropic-ratelimit-unified-reset: 2026-11-26t00:00:00z"]
+              and named(lines_j, "x-request-id") == [b"x-request-id: req-sse"],
+              f"J4 clean allowlisted headers ride (SSE): {lines_j!r}")
+        check(named(lines_j, "set-cookie") == [] and named(lines_j, "x-nul") == []
+              and clean_wire(out_j),
+              f"J5 a fold, a control byte or an off-list name drops the header (SSE): {lines_j!r}")
+        # K the frame the client gets is the frame the broker itself read by: http.client's
+        # one length as plain decimal however the origin spelled or repeated it (a second
+        # Content-Length used to leave the surplus standing in front of the client as a
+        # response of its own), and a body the origin closed off or cut short ends the
+        # connection instead of leaving the client waiting
+        out_k, closed_k = raw_turn(b"/v1/messages?k=canonical")
+        lines_k, body_k = halves(out_k)
+        check(named(lines_k, "content-length") == [b"content-length: 88"]
+              and body_k == sse_b and not closed_k,
+              f"K1 a length the origin frames plainly rides as-is: {lines_k!r}")
+        out_k, _ = raw_turn(b"/v1/messages?k=padded")
+        lines_k, body_k = halves(out_k)
+        check(named(lines_k, "content-length") == [b"content-length: 88"] and body_k == sse_b,
+              f"K2 the client reads the length as plain decimal, never the origin's text: {lines_k!r}")
+        out_k, closed_k = raw_turn(b"/v1/messages?k=list")
+        lines_k, body_k = halves(out_k)
+        check(named(lines_k, "content-length") == []
+              and named(lines_k, "connection") == [b"connection: close"]
+              and body_k == sse_b and closed_k,
+              f"K3 a length http.client won't read by closes the frame off: {lines_k!r}")
+        out_k, _ = raw_turn(b"/v1/messages?k=dup")
+        lines_k, body_k = halves(out_k)
+        check(named(lines_k, "content-length") == [b"content-length: 160"]
+              and body_k == sse_b + forged_b,
+              f"K4 a second Content-Length can't stand a forged response in front of the client: {lines_k!r}")
+        out_k, closed_k = raw_turn(b"/v1/messages?k=close")
+        lines_k, body_k = halves(out_k)
+        check(named(lines_k, "content-length") == []
+              and named(lines_k, "connection") == [b"connection: close"]
+              and body_k == sse_b and closed_k,
+              f"K5 a body the origin closes off is closed off to the client too: {lines_k!r}")
+        out_k, closed_k = raw_turn(b"/v1/messages?k=short")
+        lines_k, body_k = halves(out_k)
+        check(named(lines_k, "content-length") == [b"content-length: 500"]
+              and body_k == sse_b and closed_k,
+              f"K6 a body cut short of its length ends the connection: {lines_k!r}")
+        # L the law holds on the way out too: a client header carrying a fold or a
+        # control byte is refused before the origin ever sees it; a clean one rides
+        for l_extra, l_shape in ((b"X-R: a\r\n b\r\n", "a fold"),
+                                 (b"X-R: a\x00b\r\n", "a NUL"),
+                                 (b"X-R: a\x01b\x7f\r\n", "a control byte")):
+            out_l, _ = raw_turn(b"/v1/messages?l=clean", extra=l_extra)
+            check(out_l.startswith(b"HTTP/1.1 400 "),
+                  f"L1 {l_shape} in a client header refuses 400: {out_l[:60]!r}")
+        out_l, _ = raw_turn(b"/v1/messages?l=clean", extra=b"X-Ok: 1\r\n")
+        check(out_l.startswith(b"HTTP/1.1 200 "),
+              f"L2 a clean client header rides: {out_l[:60]!r}")
+        with open(seen_raw, encoding="latin-1") as sf:
+            seen_l = [h for p, h in (json.loads(x) for x in sf.read().splitlines())
+                      if p == "/v1/messages?l=clean"]
+        check(len(seen_l) == 1 and "x-ok: 1" in seen_l[0].lower()
+              and "x-r:" not in seen_l[0].lower(),
+              f"L3 the origin saw the clean request alone: {seen_l}")
+        p_rawbr.terminate()
+        p_raw.terminate()
+        p_rawbr.wait(timeout=10)
+        p_raw.wait(timeout=10)
         p_br.terminate()
         p_org.terminate()
         p_br.wait(timeout=10)

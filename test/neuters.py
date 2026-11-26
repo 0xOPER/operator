@@ -1559,4 +1559,33 @@ NEUTERS = [
      '        if not (is_adapter or is_human):',
      '        if not is_adapter:  # signed human verdict never consumes',
      "bin/run.py --first-level"),
+    # --- the broker's header law (both ways) and its frame ---
+    # the origin's headers cross to the jail only as clean wire text: a folded or a
+    # control-bearing allowlisted header rides again (arms J1, J2, J4, J5)
+    ("BK-resp-header-clean", BK,
+     'return clean_header(k, v) and (lk in FORWARDED_HEADERS',
+     'return (lk in FORWARDED_HEADERS'),
+    # ...and only by the allowlist: a second Server, Set-Cookie, X-Injected ride (J3, J5)
+    ("BK-resp-header-allow", BK,
+     'or lk.startswith(FORWARDED_HEADER_PREFIXES))',
+     'or True)'),
+    # the frame the client gets is http.client's own length as plain decimal: a wrong
+    # one rides (the padded and the repeated one follow it, K1, K2, K4)
+    ("BK-resp-frame-length", BK,
+     'self.send_header("Content-Length", str(length))',
+     'self.send_header("Content-Length", str(length) + "0")'),
+    # a body the origin closed off closes the client's frame too (K3, K5)
+    ("BK-resp-frame-close", BK,
+     'self.send_header("Connection", "close")',
+     'pass'),
+    # a body the origin cut short ends the connection instead of leaving the client
+    # waiting (K6)
+    ("BK-resp-frame-short", BK,
+     'elif resp.length:',
+     'elif False:'),
+    # the same law on the way out: a client header carrying a fold or a control byte
+    # reaches the origin again (L1, L3)
+    ("BK-req-header-clean", BK,
+     'if not all(clean_header(k, v) for k, v in headers.items()):',
+     'if False:'),
 ]
