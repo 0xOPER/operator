@@ -7,6 +7,9 @@ on:
     branches: [main]
 permissions:
   contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 env:
   LC_ALL: C
 
@@ -38,18 +41,17 @@ jobs:
           cd "$RUNNER_TEMP/clone"
           test/cleanroom.sh test/wave-job.sh --selftest
           test/cleanroom.sh scripts/run-all-selftests.sh --selftest
-          if [ -f keep-list.private ]; then
-            test/cleanroom.sh test/closure-check.sh --selftest
-            test/cleanroom.sh test/closure-check.sh R2
-            test/cleanroom.sh test/closure-check.sh R1
-          fi
+          test/cleanroom.sh test/canary-walk.sh --selftest
+          test/cleanroom.sh test/topology-drill.sh --selftest
+          test/cleanroom.sh test/fence-placement.sh --selftest
       - name: First-level selftests, hollow-battery, and sealed probes (outside the room)
         run: |
           cd "$RUNNER_TEMP/clone"
           scripts/run-first-level-selftests.sh
           test/hollow-battery-check.sh
           test/sealed-probe-check.sh
-          python3 -I test/forge/sealed.py all
+          test/canary-walk.sh
+          test/topology-drill.sh
       - name: The room hides home and the network and keeps the tree read-only
         run: |
           cd "$RUNNER_TEMP/clone"
@@ -74,9 +76,7 @@ jobs:
       - name: No unlisted file, no link
         run: |
           set -o pipefail
-          lists=(keep-list)
-          [ -f keep-list.private ] && lists+=(keep-list.private)
-          diff <(git ls-files | sort) <(cat "${lists[@]}" | sort)
+          diff <(git ls-files | sort) <(LC_ALL=C sort keep-list)
           [ -z "$(git ls-files -s | awk '$1==120000')" ]
       - name: No tool attribution in commit messages
         run: "! git log HEAD --format=%B | grep -iE '^\\s*co-authored-by:|^\\s*[a-z-]+-by:.*claude|(made|generated) (with|by) \\[?claude|noreply@anthropic\\.com'"
@@ -90,13 +90,9 @@ jobs:
           [ -z "$(printf '%s\n' "$tags" | grep -aE '^-----BEGIN ')" ]
           [ -z "$(git rev-list HEAD | git cat-file --batch | grep -aE '^(gpgsig|mergetag)')" ]
           t=$(mktemp -d)
-          rev_args=(HEAD)
-          [ -f keep-list.private ] && rev_args=(-1 HEAD)
-          git log "${rev_args[@]}" --format='%an <%ae>%n%cn <%ce>%n%B' > "$t/commits.txt"
+          git log HEAD --format='%an <%ae>%n%cn <%ce>%n%B' > "$t/commits.txt"
           git for-each-ref refs/tags --format='%(refname)%0a%(taggername) %(taggeremail)%0a%(contents)' >> "$t/commits.txt"
-          ex=(':!test/lint/tier-a.tsv')
-          if [ -f keep-list.private ]; then while IFS= read -r f; do ex+=(":!$f"); done < keep-list.private; fi
-          git log "${rev_args[@]}" -p --format= -- . "${ex[@]}" > "$t/patches.txt"
+          git log HEAD -p --format= -- . ':!test/lint/tier-a.tsv' > "$t/patches.txt"
           scripts/release-lint.py --root "$t"
       - name: Shellcheck and ruff ratchets
         run: test/ratchet.sh
@@ -127,6 +123,19 @@ jobs:
       - name: Workflow audit
         run: pipx run zizmor==1.16.3 --offline .github/workflows
 
+  docker:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build image and run demo and check through wrapper
+        run: |
+          scripts/docker-operator.sh --selftest
+          scripts/docker-operator.sh --rebuild --allow-linux-unconfined --ephemeral-state demo run
+          scripts/docker-operator.sh --allow-linux-unconfined --ephemeral-state check --json | python3 -c 'import json,sys; d=json.load(sys.stdin); bad=[c["check"] for c in d["checks"] if not c["ok"] and c["check"] != "signers"]; assert not bad, bad'
+
   conformance:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -140,7 +149,7 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq bubblewrap
           sudo npm install -g --no-fund --no-audit @anthropic-ai/claude-code@2.1.318 @openai/codex@0.166.0 opencode-ai@1.19.5
-      - name: Conformance cells (the pins)
+      - name: Conformance cells and live fence placement (the pins)
         run: |
           export OPERATOR_CLI_DIR="$(npm prefix -g)"
           test/conformance.sh --selftest
@@ -148,3 +157,5 @@ jobs:
           test/conformance.sh claude-code write-outside another-seat push-bare net-denied
           test/conformance.sh codex write-outside another-seat push-bare net-denied
           test/conformance.sh opencode write-outside another-seat push-bare net-denied
+          test/fence-placement.sh claude-code
+          test/fence-placement.sh claude-code control

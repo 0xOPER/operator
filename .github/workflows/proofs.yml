@@ -1,0 +1,40 @@
+name: proofs
+on:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  LC_ALL: C
+
+jobs:
+  proofs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install bubblewrap and pinned CLIs
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap
+          sudo npm install -g --no-fund --no-audit @anthropic-ai/claude-code@2.1.318
+      - name: Run credential canary walk, topology drill, and live fence placement
+        run: |
+          test/canary-walk.sh --selftest
+          test/topology-drill.sh --selftest
+          test/fence-placement.sh --selftest
+          test/canary-walk.sh
+          test/topology-drill.sh
+          export OPERATOR_CLI_DIR="$(npm prefix -g)"
+          test/fence-placement.sh claude-code
+          test/fence-placement.sh claude-code control

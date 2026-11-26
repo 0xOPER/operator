@@ -27,4 +27,6 @@ updates:
     ignore:
       - dependency-name: "ubuntu"
         versions:
-          - ">= 25.0"
+          - "24.10"
+          - "25.04"
+          - "25.10"

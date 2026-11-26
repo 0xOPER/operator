@@ -151,7 +151,7 @@ if [ $# -eq 0 ]; then
   set -- demo run
 fi
 
-exec "$DOCKER_BIN" run --rm \
+exec "$DOCKER_BIN" run --rm --init \
   --cap-add SYS_ADMIN \
   --cap-add NET_ADMIN \
   --security-opt seccomp=unconfined \
