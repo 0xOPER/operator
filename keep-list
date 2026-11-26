@@ -20,6 +20,7 @@ SECURITY.md
 VERSION
 assets/banner.svg
 assets/logo.svg
+assets/video-preview.svg
 bin/approvals
 bin/audit-hook.py
 bin/broker.py

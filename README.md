@@ -17,12 +17,19 @@
 </p>
 
 <p align="center">
+  <a href="#watch-the-overview">Video Overview</a> ·
   <a href="#try-it-in-60-seconds">Try It in 60 Seconds</a> ·
+  <a href="#why-not-just-use-another-agent-orchestrator">Why Not Other Orchestrators?</a> ·
   <a href="#how-operator-works-separation-of-powers">How It Works</a> ·
-  <a href="#running-an-overnight-job">Overnight Workflow</a> ·
   <a href="docs/quickstart.md">Quickstart</a> ·
-  <a href="docs/architecture.md">Architecture</a> ·
   <a href="LIMITATIONS">Limitations</a>
+</p>
+
+<a id="watch-the-overview"></a>
+<p align="center">
+  <a href="https://github.com/0xOPER/operator/releases/download/v0.1.0/operator-overview-v0.1.0.mp4">
+    <img src="assets/video-preview.svg" alt="Watch the narrated OPERATOR v0.1.0 overview video" width="100%">
+  </a>
 </p>
 
 ---
@@ -43,6 +50,23 @@ Every builder who has tried leaving coding agents running unattended hits the sa
    On a 1-step demo, a 10% chance of an agent faking a test pass is annoying. On a 10-step task chain, a single fake green at Step 2 silently poisons Steps 3 through 10. Without tamper-proof checks at every step, long runs quietly drift off a cliff.
 2. **The "God-Mode Manager" Trap**
    Most multi-agent frameworks try to remove the human by putting a "Supervisor LLM" in charge with full repo access. When a worker gets stuck at 2 AM, the Supervisor LLM gets frustrated (or prompt-injected) and "helps" by lowering the bar, editing the test, or rubber-stamping bad code just to finish the job.
+
+---
+
+## Why Not Just Use Another Agent Orchestrator?
+
+Most tools in the coding-agent ecosystem optimize for **speed, parallel branches, or compute isolation**—not for proving that a multi-step overnight run stayed honest. Comparing the five common architectural approaches:
+
+| Approach | Key Isolation | Tamper-Proof Tests | Zero-AI Gates | Wraps Any Commercial CLI | Primary Weakness on Overnight Runs |
+| :--- | :---: | :---: | :---: | :---: | :--- |
+| **Solo Coding CLIs & `while true` Loops** | ✗ | ✗ | ✗ | ✓ | API keys live inside the CLI process; the agent can edit repo tests or `pytest.ini`/`conftest.py`; internal permission flags drift across CLI releases. |
+| **Parallel Git-Worktree & Swarm Runners** | ✗ | ✗ | ✗ | ✓ | Great for launching 5–30 parallel branches, but workers typically share your local UID, `.git` store, and raw host API keys—and trust self-reported test exits. |
+| **Supervisor-LLM Multi-Agent Frameworks** | ◐ | ✗ | ✗ | ◐ | Puts a prompt-injectable manager model in charge of approving or fixing stuck tasks; under long context or hostile repo text, the supervisor softens checks or rubber-stamps broken diffs. |
+| **Container & Cloud MicroVM Sandboxes** | ◐ | ✗ | ◐ | ✓ | Strong machine isolation, but **verification-blind**: an agent never needs to leave the sandbox to delete assertions, skip tests, or plant repo hooks/configs that run after handoff. |
+| **In-Process Policy & Guardrail Middleware** | ◐ | ✗ | ✓ | ✗ | Formal capability/flow wrappers require instrumenting a custom Python planner loop, so they cannot wrap closed-source commercial CLIs and do not grade code truth. |
+| **OPERATOR (`v0.1.0`)** | **✓** | **✓** | **✓** | **✓** | **Separates rules, jailed execution, tamper-proof checks, rival-family review, and bounded `[seat.op]` retries.** *(Trade-off at `v0.1.0`: sequential dispatch `concurrency = 1` today; parallel workers come next.)* |
+
+*Legend: **✓** enforced deterministically · **◐** partial or optional · **✗** not enforced.*
 
 ---
 
