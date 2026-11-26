@@ -3025,11 +3025,22 @@ def first_level():
     prog_with("true")
     r = run_row(env_extra={"CONTRACT_REPO": bare}, arm="h")
     check(r.returncode == 2 and "info/attributes" in r.stderr, f"F attributes void: {r.stderr}")
-    # G the jail's network namespace holds only loopback, so an unshared net is the
-    # proven shape, not a connect that would fail on the host too
-    prog_with('test "$(grep -c : /proc/net/dev)" = 1')
-    r = run_row(arm="i")
-    check(r.returncode == 0, f"G a lonely loopback: {r.stdout}{r.stderr}")
+    # G the jail's network, PID and user namespaces are isolated: lonely loopback,
+    # parent loopback listener unreachable, and parent contract.py absent from /proc
+    import socket as _sock
+    with _sock.socket(_sock.AF_INET, _sock.SOCK_STREAM) as _srv:
+        _srv.bind(("127.0.0.1", 0))
+        _srv.listen(4)
+        _port = _srv.getsockname()[1]
+        prog_with(
+            'test "$(grep -c : /proc/net/dev)" = 1 '
+            '&& ! grep -qa "[c]ontract.py" /proc/[0-9]*/cmdline '
+            '&& python3 -I -c '
+            f'"import socket,sys; s=socket.socket(); s.settimeout(1.0); '
+            f'rc=s.connect_ex((\'127.0.0.1\',{_port})); s.close(); sys.exit(0 if rc!=0 else 1)"'
+        )
+        r = run_row(arm="i")
+    check(r.returncode == 0, f"G a lonely loopback and isolated namespaces: {r.stdout}{r.stderr}")
     # G2 the scrubbed env: the operator's variables never reach the check, the setenvs do
     prog_with('! env | grep -q CONTRACT_ARM && env | grep -q "PROG=/prog"')
     r = run_row(arm="p")

@@ -87,9 +87,12 @@ def run_test(tree, tool, cmd, tmpdir=None):
         r = subprocess.run(argv, cwd=tree, capture_output=True, timeout=TIMEOUT,
                            env=env, stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
-        return 124
+        return 124, False
+    out = (r.stdout or b"") + (r.stderr or b"")
+    has_fail = any(m in out for m in (b"FAIL", b"AssertionError", b"Traceback"))
     # rc 0 with no OK line: the tool failed and swallowed it
-    return r.returncode if r.returncode or b": OK" in r.stdout else 99
+    rc = r.returncode if r.returncode or b": OK" in r.stdout else 99
+    return rc, has_fail
 
 
 def parses(path):
@@ -148,7 +151,7 @@ def main():
     if unknown or len(NEUTERS) < NEUTER_FLOOR or len(allowed_survivors) > SURVIVOR_CEILING:
         print(f"neuter: VOID, unknown ids {sorted(unknown)}, or rows {len(NEUTERS)}<{NEUTER_FLOOR}, or baseline {len(allowed_survivors)}>{SURVIVOR_CEILING}", file=sys.stderr)
         return 2
-    killed_by_tool, survivors, bad = {}, set(), 0
+    killed_by_tool, survivors, timeouts, voids, bad = {}, set(), set(), set(), 0
     rows = [r for r in NEUTERS if (not a.only or r[0] in a.only)]
     for id_, tool, old, *_ in rows:
         if not (ROOT / tool).is_file():
@@ -167,7 +170,8 @@ def main():
         try:
             stmp = pathlib.Path(d0, "tmp")
             stmp.mkdir()
-            return key, run_test(copy_tree(d0), tool, cmd, tmpdir=stmp)
+            rc, _ = run_test(copy_tree(d0), tool, cmd, tmpdir=stmp)
+            return key, rc
         finally:
             _force_rmtree(d0)
 
@@ -176,25 +180,42 @@ def main():
             if rc != 0:
                 print(f"neuter: VOID, {key} is red before any neuter (rc={rc})", file=sys.stderr)
                 return 2
-        for row, rc in zip(rows, pool.map(run_row, rows)):
+        for row, res in zip(rows, pool.map(run_row, rows)):
             id_, tool = row[:2]
-            if rc is None:
+            if res is None:
                 print(f"neuter: VOID, {id_} doesn't parse, so a failure would prove nothing", file=sys.stderr)
                 return 2
-            state = "killed" if rc != 0 else "SURVIVED"
-            print(f"{state:9} {id_:12} {tool}", flush=True)
-            if rc != 0:
+            rc, has_fail = res
+            if rc == 0:
+                state = "SURVIVED"
+                survivors.add(id_)
+            elif rc == 124:
+                state = "TIMEOUT"
+                timeouts.add(id_)
+            elif rc == 2:
+                state = "VOID"
+                voids.add(id_)
+            elif rc == 1 or has_fail:
+                state = "killed"
                 killed_by_tool[tool] = killed_by_tool.get(tool, 0) + 1
             else:
-                survivors.add(id_)
+                state = f"RC={rc}"
+                voids.add(id_)
+            print(f"{state:9} {id_:12} {tool}", flush=True)
     new_survivors = survivors - allowed_survivors
     if a.only:
-        print(f"only={len(a.only)} killed={sum(killed_by_tool.values())} survived={len(survivors)}")
-        return 1 if new_survivors else 0
+        print(f"only={len(a.only)} killed={sum(killed_by_tool.values())} survived={len(survivors)} timeout={len(timeouts)} void={len(voids)}")
+        return 1 if (new_survivors or timeouts or voids) else 0
     stale = allowed_survivors - survivors
     untested = [t for t in tools_with_selftest() if t not in killed_by_tool and pathlib.Path(t).name not in exceptions]
     for s in sorted(new_survivors):
         print(f"NEW SURVIVOR {s}")
+        bad += 1
+    for t_id in sorted(timeouts):
+        print(f"TIMEOUT {t_id}: timed out at {TIMEOUT}s (not counted as killed)")
+        bad += 1
+    for v_id in sorted(voids):
+        print(f"VOID {v_id}: exited VOID or without failure marker (not counted as killed)")
         bad += 1
     for s in sorted(stale):
         print(f"STALE BASELINE {s}: it no longer survives, so remove it from {SURVIVORS.name}")
@@ -203,7 +224,7 @@ def main():
         print(f"UNTESTED {t}: no neuter makes its selftest fail")
         bad += 1
     total = sum(killed_by_tool.values())
-    print(f"neuters={len(NEUTERS)} killed={total} survived={len(survivors)} baseline={len(allowed_survivors)} tools_tested={len(killed_by_tool)}")
+    print(f"neuters={len(NEUTERS)} killed={total} survived={len(survivors)} timeout={len(timeouts)} void={len(voids)} baseline={len(allowed_survivors)} tools_tested={len(killed_by_tool)}")
     if total == 0:
         print("neuter: VOID, nothing was killed", file=sys.stderr)
         return 2
