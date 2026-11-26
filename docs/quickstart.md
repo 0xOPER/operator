@@ -46,25 +46,22 @@ A *program* is a directory holding a team, a contract and role files.
 
 ```bash
 bin/operator.sh init myteam --template feature
-cd myteam
 ```
 
-You get `team.toml`, `contract.toml` and `roles/` -- a one-writer, one-reviewer
-team to edit, not a blank file. The authoring guide
-([authoring.md](authoring.md)) walks every field; the minimum:
+Stay in the repository root and pass `myteam` positionally to every verb (`init` writes only `team.toml`, `contract.toml`, and `roles/`—no `bin/`). You get a one-writer, one-reviewer team to edit, not a blank file. The authoring guide ([authoring.md](authoring.md)) walks every field; the minimum:
 
 - `team.toml`: each seat's role file, adapter, optional `model` (BYO model ID
   overriding the adapter manifest's `default_model`), what it may `write`, and a
   budget. Point `adapter` at a real CLI (`claude-code`, `codex`, `opencode`,
   `zcode`) when you have the CLI; `stub` is fine to learn.
 - `contract.toml`: rows naming `cmd` checks. **A check that cannot fail is a
-  lie**; `operator contract lint` refuses trivial commands, `|| true` / `true ||`
+  lie**; `bin/operator.sh contract lint` refuses trivial commands, `|| true` / `true ||`
   short-circuits, dummy `test -f` stats on unsealed paths, and unanchored
   `control` twins. Rows with the same seat, stage and deps form one task.
 
 ```bash
-bin/operator.sh team validate .
-bin/operator.sh contract validate .
+bin/operator.sh team validate myteam
+bin/operator.sh contract validate myteam
 ```
 
 ## 4. Arm it
@@ -75,10 +72,10 @@ public half, then sign the closure:
 
 ```bash
 ssh-keygen -t ed25519 -N 'a passphrase you keep' -f ~/myteam-key
-bin/operator.sh init . --key ~/myteam-key     # the private half's path;
+bin/operator.sh init myteam --key ~/myteam-key     # the private half's path;
                                                    # the .pub must sit beside it
-CONTRACT_REPO=/path/to/work-repo bin/operator.sh ruling closure .
-CONTRACT_REPO=/path/to/work-repo bin/operator.sh ruling sign . --kind arm --key ~/myteam-key
+CONTRACT_REPO=/path/to/work-repo bin/operator.sh ruling closure myteam
+CONTRACT_REPO=/path/to/work-repo bin/operator.sh ruling sign myteam --kind arm --key ~/myteam-key
 ```
 
 Pass `CONTRACT_REPO` when signing so the closure pins the work repository's base
@@ -91,9 +88,9 @@ carries it if you'd rather not type it each time.
 ## 5. Run it
 
 ```bash
-# With stub adapters (no API key needed):
-bin/operator.sh run start . --run r1 --autonomy attended --from /path/to/work-repo
-bin/operator.sh run tick . --run r1          # dispatch, collect, review, settle
+# With stub adapters (no API key needed; requires plans/<task>.json in myteam/):
+bin/operator.sh run start myteam --run r1 --autonomy attended --from /path/to/work-repo
+bin/operator.sh run tick myteam --run r1     # dispatch, collect, review, settle
 
 # With real CLIs (single-origin or multi-provider; real keys stay host-side in broker.py):
 OPERATOR_CLI_DIR=/usr/local \
@@ -101,10 +98,10 @@ OPERATOR_ANTHROPIC_ORIGIN=https://api.example.com \
 OPERATOR_ANTHROPIC_CREDENTIAL="$YOUR_ANTHROPIC_KEY" \
 OPERATOR_OPENAI_ORIGIN=https://api.example.com \
 OPERATOR_OPENAI_CREDENTIAL="$YOUR_OPENAI_KEY" \
-  bin/operator.sh run loop . --run r1        # unattended ticks until done/halt
+  bin/operator.sh run loop myteam --run r1   # unattended ticks until done/halt
 
 bin/operator.sh status r1 --json
-bin/operator.sh run next . --run r1          # what the engine wants next, and why
+bin/operator.sh run next myteam --run r1     # what the engine wants next, and why
 ```
 
 Each tick drives the ladder for every ready task -- reserve (the reservation
@@ -160,7 +157,7 @@ shape on its panel: promoted chips and a settled budget dock:
 
 ```bash
 bin/operator.sh run status r1 --json     # state: done
-bin/operator.sh run report . --run r1    # the claims summary, on the record
+bin/operator.sh run report myteam --run r1    # the claims summary, on the record
 ```
 
 What 0.1 does not claim -- told vectors, under-test detection, the rest -- is

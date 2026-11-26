@@ -3,8 +3,8 @@
 A program is a directory: `team.toml` (who works), `contract.toml` (what done
 means), `roles/*.md` (the persona each seat reads). The engine refuses what
 these files don't name -- unknown keys are findings, not style warnings -- so
-this page is the complete vocabulary. `operator team validate <dir>` checks
-the team; `operator contract validate <dir>` checks the whole table.
+this page is the complete vocabulary. `bin/operator.sh team validate <dir>` checks
+the team; `bin/operator.sh contract validate <dir>` checks the whole table.
 
 ## team.toml
 
@@ -71,7 +71,7 @@ delivery, one review.
 ```toml
 schema = 2
 
-[setup]                             # runs jailed via `operator contract setup <dir>`
+[setup]                             # runs jailed via `bin/operator.sh contract setup <dir>`
 cmd = "..."                         # bridged through egress-proxy.py into <prog>/env (/env)
 inputs = ["requirements.lock"]
 network = ["pypi.org", "files.pythonhosted.org"]
@@ -116,7 +116,7 @@ The default derives from the shape, and an explicit label that lies refuses:
   `expect_base_fail`) or `expect_base_fail = true` (optionally with
   `test_paths = ["tests"]` to transplant newly authored candidate tests onto
   `CONTRACT_PIN` and verify they fail on the unpatched base) to pass
-  `operator contract lint`.
+  `bin/operator.sh contract lint`.
 - **human** -- a person signs. `ruling.py sign --kind row --row <id>`.
 
 ### The twin law (`control`) and differential falsifiability (`expect_base_fail`)
@@ -157,7 +157,7 @@ the prior round riding the next pack.
 
 ### Templates
 
-`operator init <dir> --template <name>` ships three:
+`bin/operator.sh init <dir> --template <name>` ships three:
 
 - **feature** -- one writer, one reviewer, the smallest honest team.
 - **plan** -- goals with lint (short-circuits, trivial heads, bare literals

@@ -50,7 +50,7 @@ Humans do not babysit the execution loop. Instead, the owner defines the program
 
 ### 2. Autonomous Executive — Jailed Seats & Unattended Loop
 
-`bin/run.py loop <program-dir> --run R --interval S` (or `operator run loop ...`) drives the run autonomously until all tasks reach `done`, a terminal circuit breaker trips (`halt`, `STOP`, retry ceiling), or `SIGINT`/`SIGTERM` arrives cleanly between ticks:
+`bin/run.py loop <program-dir> --run R --interval S` (or `bin/operator.sh run loop ...`) drives the run autonomously until all tasks reach `done`, a terminal circuit breaker trips (`halt`, `STOP`, retry ceiling), or `SIGINT`/`SIGTERM` arrives cleanly between ticks:
 
 1. **Worker turns (`[seat.<w>]`)**: Each attempt gets a fresh 1-commit rootless git checkout (zero commit history, hidden instruction blobs absent unless `repo_context = "load"`), an engine-composed brief with BATS budget awareness and per-turn random `<uf-xxxxxx>` fences, and an adapter jail (`bin/spawn.py`).
 2. **Independent reviewer (`[seat.<r>]`)**: After machine checks pass, the reviewer receives a read-only checkout of `candidate/<task>` plus a nonce-fenced pack containing the engine-trusted task specification (`contract.toml` row descriptions outside untrusted spans), candidate diff (`-M90%` rename-aware, verified lockfiles summarised above `PACK_CAP`), untrusted worker self-report, operator-supplied evidence, and contract receipts (`bin/review.py`). Adapter verdicts must prove `doc.seat == reviewer`, `am.seat == doc.seat`, `am.review_turn is True`, `am.candidate == cand_sha`, and `supervisor.rc == 0`.

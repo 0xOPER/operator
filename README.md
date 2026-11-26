@@ -166,22 +166,21 @@ Once you have tried the demo, setting up your own unattended run takes four step
 ```bash
 # 1. Scaffold a team + contract from a template (feature, plan, or research)
 bin/operator.sh init my-job --template feature
-cd my-job
-bin/operator.sh team validate .
-bin/operator.sh contract validate .
+bin/operator.sh team validate my-job
+bin/operator.sh contract validate my-job
 
 # 2. Sign your plan, file scopes, and budgets once with a passphrase-protected SSH key
-ssh-keygen -t ed25519 -f ~/operator-key
-bin/operator.sh init . --key ~/operator-key
-CONTRACT_REPO=/path/to/your-repo bin/operator.sh ruling sign . --kind arm --key ~/operator-key
+ssh-keygen -t ed25519 -N 'a passphrase you keep' -f ~/operator-key
+bin/operator.sh init my-job --key ~/operator-key
+CONTRACT_REPO=/path/to/your-repo bin/operator.sh ruling sign my-job --kind arm --key ~/operator-key
 
 # 3. Start and run the unattended overnight loop (API keys stay host-side in broker.py)
-bin/operator.sh run start . --run r1 --autonomy unattended --from /path/to/your-repo
-bin/operator.sh run loop . --run r1
+bin/operator.sh run start my-job --run r1 --autonomy unattended --from /path/to/your-repo
+bin/operator.sh run loop my-job --run r1
 
 # 4. In the morning: inspect the live panel or export the signed run report
 bin/operator.sh panel serve --run r1         # http://127.0.0.1:8765
-bin/operator.sh run report . --run r1
+bin/operator.sh run report my-job --run r1
 ```
 
 When a branch parks for human input or a reviewer needs your sign-off:
