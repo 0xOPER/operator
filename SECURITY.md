@@ -12,22 +12,25 @@ Security fixes are maintained for the current `0.1.x` release line on `main`.
 
 Please **do not** open a public GitHub issue for security reports.
 
-Use GitHub's [Private Vulnerability Reporting](https://github.com/0xOPER/operator/security/advisories/new) on `0xOPER/operator` to send a confidential report directly to the maintainers. Include:
+Use GitHub's [Private Vulnerability Reporting](
+https://github.com/0xOPER/operator/security/advisories/new
+) on `0xOPER/operator` to send a confidential report directly to the maintainers. Include:
 
 - A description of the boundary violation (for example: sandbox escape, ungranted file write, credential leak, test-seal bypass, or reviewer/operator privilege escalation).
 - Minimal reproduction steps or a failing test fixture.
 - Environment details (Linux distribution, kernel version, `bwrap --version`, Python version, and adapter CLI if relevant).
 
-We aim to acknowledge reports within 48 hours and coordinate a fix and disclosure timeline with you before publishing an advisory.
+We aim to acknowledge reports within 48 hours and coordinate a fix and disclosure timeline with you before publishing an advisory. If GitHub Private Vulnerability Reporting is unavailable to you, open a brief public issue requesting a private security contact channel **without** posting reproduction details.
 
 ## Security Scope
 
 OPERATOR enforces deterministic host-side boundaries around untrusted coding-agent turns. The following boundaries are **in scope**:
 
-- **Sandbox confinement (`bin/lib/jail.py`, `bin/spawn.py`)**: Network isolation, read-only host filesystem, hidden home directory, PID/mount/user namespace isolation, and bounded write grants.
+- **Sandbox confinement (`bin/lib/jail.py`, `bin/spawn.py`)**: Network isolation, read-only host filesystem, hidden home directory, PID/mount/user namespace isolation, and write-scope grants.
 - **Credential & egress isolation (`bin/broker.py`, `bin/egress-proxy.py`)**: Keeping real API keys outside the worker jail, enforcing API routes and usage/budget caps, and blocking unauthorized outbound traffic.
 - **Sealed test verification (`bin/contract.py`, `bin/lib/pytest-guard.py`)**: Preventing workers from modifying pinned test suites, runner configs, or forging passing check receipts.
-- **Independent review & `[seat.op]` capability guards (`bin/review.py`, `bin/run.py`, `bin/ruling.py`)**: Enforcing signed closure rulings, cross-family review requirements, and hard host-side blocks on protected escalations (`review_red`, `gate_refused`, `retry_cap`, `halt`, `security`, `ruling`).
+- **Independent review, rulings & `[seat.op]` capability guards (`bin/review.py`, `bin/run.py`, `bin/ruling.py`, `bin/init.py`)**: Enforcing signed closure rulings, key registration, cross-family review requirements, and hard host-side blocks on protected escalations (`review_red`, `gate_refused`, `retry_cap`, `halt`, `security`, `ruling`).
+- **Control surfaces, shims & inter-system mail (`bin/panel.py`, `bin/wire.py`, `bin/census.py`)**: Loopback panel HTTP endpoint authentication/verb whitelisting, SSH-signed asynchronous mail envelopes, and PATH-shim census enforcement.
 - **Prompt boundary fencing (`bin/compose-fence.py`, `bin/untrusted-span-fence.py`, `bin/tool-fence-hook.py`)**: Isolating untrusted worker output and tool results from trusted contract specifications.
 
 ## Stated Out-of-Scope Boundaries

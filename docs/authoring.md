@@ -49,9 +49,18 @@ Shipped templates default to `adapter = "stub"` and omit `[seat.op]`. Starting a
 - **Bounded effect:** The engine consumes only `report.json` from an operator turn and accepts at most 8 whitelisted directives per turn from 5 verbs: `retry`, `reply`, `resolve`, `cancel`, `stop`. Host guards block `resolve` (and autonomous `retry` on `review_red`) for protected escalations (`halt`, `stop`, `security`, `ruling`, `gate_refused`, `retry_cap`, `review_red`) and enforce `MAX_TASK_RETRIES = 3`.
 
 Every seat key: `role`, `adapter`, `human`, `write`, `read`, `see`, `network`,
-`shell`, `mcp`, `memory`, `skills`, `budget`, `model`, `repo_context`. The
-team file also takes top-level `contract`, `autonomy`, `budget` and `mcp`
-rows; the shipped templates are the working examples.
+`shell`, `mcp`, `memory`, `skills`, `budget`, `model`, `repo_context`, `gpu`,
+`ro`. The team file also takes top-level `schema`, `name`, `contract`,
+`autonomy`, `max_parallel`, `budget`, and `mcp`; the shipped templates are the
+working examples (copy them via `bin/operator.sh init` rather than editing
+`profiles/templates/` in place, which dirties the engine repo and causes
+`ruling sign` to refuse).
+
+> **Enforceability & inert keys at v0.1:** Every shipped adapter manifest
+> declares `tested_classes = ["write"]`, so `read`, `network`, `shell`, and seat
+> `mcp` grants are currently **refused** by `bin/team.py` for all adapters.
+> `memory`, `skills`, and `mcp` declarations are currently **inert** (accepted
+> with a note, not yet wired to enforcement).
 
 The `stub` adapter is the fixture worker: its steps come from
 `plans/<task>.json` in the program dir (engine-side authoring -- the plan is
@@ -74,8 +83,28 @@ waits on the approvals screen until it does.
   a worker changes stays in its attempt as evidence.
 - **see** -- what the sparse checkout leaves visible: a seen path is ordinary
   repo text to the worker, and grants no writes (the gate gates on `write`).
-- **budget** -- spawn reserves min(seat, team, usd/(max_rework+1)); brokered
-  turns settle at ground-truth `broker.jsonl` USD spend (`max(broker_usd, worker_cost)`).
+- **budget** -- accepts `usd` (team or seat ceiling; reservations settle against
+  it, priced from `broker.py`'s built-in rate table), `minutes` (wall-clock
+  ceiling), and `context` (input-token budget that gates the next reservation).
+  Spawn reserves `min(seat, team, usd/(max_rework+1))`.
+
+### Waivers & ruling bindings
+
+`bin/team.py` recognizes four named waivers (`--waive <name>` on `ruling sign`):
+
+- `budget=advisory` -- emitted whenever a team or seat sets `budget.usd` (the
+  cap gates the next reservation; an in-flight attempt may overshoot up to its
+  reservation/turn cap, and USD is estimated from `broker.py`'s model price
+  table).
+- `rule-of-two` -- waives overlapping write/external-input combinations when
+  flagged by `team validate`.
+- `unreviewed-rows` -- waives rows without an independent reviewer.
+- `same-family-review` -- required if a worker and its reviewer share the same
+  model family.
+
+When signing an arm ruling (`bin/operator.sh ruling sign <dir> --kind arm`),
+you can also bind it to a single run (`--run <name>`) and/or an expiry time
+(`--not-after <UTC ISO-8601>`).
 
 Rows with the same seat, stage and deps form ONE task: one attempt, one
 delivery, one review.
@@ -86,29 +115,57 @@ delivery, one review.
 schema = 2
 
 [setup]                             # runs jailed via `bin/operator.sh contract setup <dir>`
-cmd = "..."                         # bridged through egress-proxy.py into <prog>/env (/env)
-inputs = ["requirements.lock"]
+cmd = "python3 -m venv /env && /env/bin/pip install -r requirements.lock"
+inputs = ["requirements.lock"]      # hashed into setup stamp
 network = ["pypi.org", "files.pythonhosted.org"]
+timeout = 300                       # optional setup timeout in seconds
 
 [[row]]
-id = "impl"                         # [a-z0-9][a-z0-9._-]{0,63}, unique
-stage = "build"                     # stages run in DECLARATION order, not name order
-desc = "what done means, in words"
+id = "tests.control"                # [a-z0-9][a-z0-9._-]{0,63}, unique
+stage = "verify"                    # stages run in DECLARATION order, not name order
+desc = "Verify the sealed test suite fails on broken fixture"
 kind = "run"                        # run | ruling | tsv | git
-seat = "writer"                     # who works it
-reviewer = "reviewer"               # REQUIRED on every row: whose verdict gates delivery
-deps = ["design.review"]            # rows that must be green first; cycles refuse
-cmd = "python3 -I tests/run.py"     # THE CHECK. It decides green, never the report
-timeout = 300                       # at least 60
+seat = "writer"
+reviewer = "reviewer"
+cmd = "pytest -q tests/test_control.py"
+timeout = 120                       # at least 60
 oracle = ["tests"]                  # paths restored from the pinned commit, bound ro
-oracle_from = "lender.row"          # borrow a lender's oracle; cycles refuse at load
+runner = "pytest"                   # optional: "pytest" (force guard) | "raw"
+min_tests = 1                       # optional: minimum collected tests for pytest-guard
+
+[[row]]
+id = "impl"
+stage = "build"
+desc = "Implement feature and pass pinned test suite"
+kind = "run"
+seat = "writer"
+reviewer = "reviewer"               # REQUIRED on every row: whose verdict gates delivery
+deps = ["tests.control"]            # rows that must be green first; cycles refuse
+cmd = "pytest -q tests/"            # THE CHECK. It decides green, never the report
+timeout = 300
+oracle_from = "tests.control"       # borrow a lender's oracle; cycles refuse at load
 ro = ["tools"]                      # extra read-only binds from the program tree
-control = "impl.control"            # the twin: a dead control fails its row
-driver = "external"                 # route the row through the verdict gate
+control = "tests.control"           # the twin: a dead control fails its row
 evidence = "sealed"                 # sealed | author-reachable | human
-gpu = true                          # the host's nvidia devices ride the check
-                                    # jail; a host with none Voids naming its fix
+mutable_configs = []                # optional: allowlisted runner configs left writable
+# gpu = true                        # optional: mount host nvidia devices (Voids if absent)
+
+[[row]]
+id = "scope.changed"
+stage = "build"
+desc = "Ensure source files changed without touching tests"
+kind = "git"
+seat = "writer"
+reviewer = "reviewer"
+deps = ["impl"]
+require = ["src/**"]
+forbid = ["tests/**"]
+diff_base = "step"                  # git rows only: "step" (commit^1, default) | "pin"
 ```
+
+*(Note: `driver = "external"` routes a `run` row through an external verdict
+gate and cannot be combined with `cmd` on the same row; `bin/contract.py`
+refuses both together.)*
 
 ### The evidence label
 
@@ -169,9 +226,10 @@ naming an earlier candidate -- certifies nothing and refuses by name. Red
 refuses with the attempt standing as evidence; `--changes` re-dispatches with
 the prior round riding the next pack.
 
-### Templates
+### Templates and state
 
-`bin/operator.sh init <dir> --template <name>` ships three:
+`bin/operator.sh init <dir> --template <name>` ships three starter templates
+(copy them with `init`; never edit files under `profiles/` in place):
 
 - **feature** -- one writer, one reviewer, the smallest honest team.
 - **plan** -- goals with lint (short-circuits, trivial heads, bare literals
@@ -180,6 +238,14 @@ the prior round riding the next pack.
   bodies sealed by a content-hash manifest, quotes verbatim from sealed
   bodies only, `[n]` mapped from the numbered closing list only. A fabricated
   URL or quote stays red.
+
+The repository also includes `profiles/migration/contract.toml` as a reference
+contract example for migration-style tasks.
+
+Run state lives under `$OPERATOR_HOME` (default `$XDG_STATE_HOME/operator`,
+otherwise `~/.local/state/operator`). Each run keeps a full clone of the work
+repository under `runs/<run>/parent/`; reclaim disk space from finished runs
+with `bin/operator.sh run gc <run>`.
 
 ## Rules of thumb
 

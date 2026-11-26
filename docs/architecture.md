@@ -80,7 +80,7 @@ reserve -> build_attempt -> compose_brief (nonce fence + budget)
 
 - **Contract-First Execution**: Machine-checkable contract rows (`run`, `tsv`, `git`, and twin `control` rows; excluding `ruling` and `driver = "external"`) run immediately after candidacy and **before** `review.dispatch()`. Broken candidates fast-fail without burning reviewer spend, and `spawn._promote()` refuses promotion unless both the review gate and verified call-log receipts for the exact candidate SHA, pin commit, and arm hash are green.
 - **Capability Guards on `[seat.op]`**:
-  - `resolve` refuses protected terminal/security/ruling escalations (`halt`, `stop`, `security`, `ruling`, `gate_refused`, `retry_cap`), symlinks, and path traversal.
+  - `resolve` refuses protected terminal/security/ruling escalations (`halt`, `stop`, `security`, `ruling`, `gate_refused`, `retry_cap`, `review_red`), symlinks, and path traversal.
   - `retry` enforces a deterministic per-task retry ceiling (`MAX_TASK_RETRIES`), emitting a protected `retry_cap` escalation and paging when reached.
   - `reply` stamps every op note with an explicit advisory provenance tag (`[op-reply (advisory; ...)]`) and logs `source="op"`.
   - `stop` invokes `cmd_stop()` to terminate live jailed pid namespaces before sealing `STOP`.
