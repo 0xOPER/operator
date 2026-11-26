@@ -1501,4 +1501,12 @@ NEUTERS = [
     ("SP-nonutf8-gate", SP,
      '    if non_utf8:\n        return f"non-utf8-path: {\' \'.join(non_utf8[:8])}"',
      '    if False:\n        return ""'),
+    ("TD-markers-invisible", "test/lib/topology-drill.py",
+     '    verdict("markers-invisible", None, not hits)',
+     '    verdict("markers-invisible", None, True)',
+     "test/topology-drill.sh --selftest"),
+    ("TD-skip-usr", "test/lib/topology-drill.py",
+     '            dirnames[:] = [d for d in dirnames if d == "local"]',
+     '            pass',
+     "test/topology-drill.sh --selftest"),
 ]

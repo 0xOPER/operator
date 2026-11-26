@@ -19,7 +19,9 @@ DRILL="$ROOT/test/lib/topology-drill.py"
 die() { echo "topology-drill: $*" >&2; exit 2; }
 
 selftest() {
-  local rc=0 out
+  local rc=0 out T
+  T=$(mktemp -d) || exit 2
+  trap 'rm -rf "${T:?}"' EXIT
   # A usage: an unknown mode names itself a LEAK, the caller refuses
   out=$(python3 "$DRILL" no-such-mode 2>&1); printf '%s' "$out" | grep -q "probe usage LEAK" \
     || { echo "A unknown mode: $out"; rc=1; }
@@ -42,7 +44,18 @@ for l in lines:
 assert any("direct-broker LEAK" in l for l in lines), f"closed port: {lines}"
 print("verdicts parse")
 PY
-  if [ $rc = 0 ]; then echo "selftest: OK (usage, verdict shapes, closed-port twin)"; else echo "selftest: FAIL"; fi
+  # D fs walk skips static usr/* subtrees while still scanning usr/local and etc
+  mkdir -p "$T/root/usr/share" "$T/root/usr/local" "$T/root/etc" "$T/repo"
+  printf 'MARK-O-123\n' > "$T/root/usr/share/static.txt"
+  out=$(WALK_ROOT="$T/root" TD_REPO_DIR="$T/repo" python3 "$DRILL" fs MARK-O-123 MARK-H-456 "$T/nosock" 2>&1)
+  { printf '%s\n' "$out" | grep -q "probe repo-writable ok" \
+      && printf '%s\n' "$out" | grep -q "probe markers-invisible refused"; } \
+    || { echo "D1 static usr/share skipped: $out"; rc=1; }
+  printf 'MARK-H-456\n' > "$T/root/usr/local/leak.txt"
+  out=$(WALK_ROOT="$T/root" TD_REPO_DIR="$T/repo" python3 "$DRILL" fs MARK-O-123 MARK-H-456 "$T/nosock" 2>&1)
+  printf '%s\n' "$out" | grep -q "probe markers-invisible LEAK" \
+    || { echo "D2 usr/local leak caught: $out"; rc=1; }
+  if [ $rc = 0 ]; then echo "selftest: OK (usage, verdict shapes, closed-port twin, fs walk)"; else echo "selftest: FAIL"; fi
   exit $rc
 }
 [ "${1:-}" = --selftest ] && selftest
@@ -85,9 +98,19 @@ timeout -k 10 150 python3 "$ROOT/bin/spawn.py" worker "$ADIR" --timeout 120 -- \
   > "$D/fs.out" 2>&1 || true
 FS_OUT=$(cat "$ADIR/transcript.out" 2>/dev/null)
 check_fs() { printf '%s\n' "$FS_OUT" | grep -q "probe $1 $2"; }
-check_fs repo-writable ok || { echo "topology-drill: FAIL (the repo is not writable): $(printf '%s' "$FS_OUT" | tail -3)"; exit 1; }
+dump_fs_diag() {
+  echo "    --- fs.out ---"
+  sed 's/^/    /' "$D/fs.out" 2>/dev/null
+  echo "    --- supervisor.json ---"
+  sed 's/^/    /' "$ADIR/supervisor.json" 2>/dev/null
+  echo "    --- transcript.out ---"
+  tail -20 "$ADIR/transcript.out" 2>/dev/null | sed 's/^/    /'
+  echo "    --- transcript.err ---"
+  tail -20 "$ADIR/transcript.err" 2>/dev/null | sed 's/^/    /'
+}
+check_fs repo-writable ok || { echo "topology-drill: FAIL (the repo is not writable):"; dump_fs_diag; exit 1; }
 for p in other-tree engine-home markers-invisible docker-sock; do
-  check_fs $p refused || { echo "topology-drill: FAIL (fs probe $p leaked or never ran)"; exit 1; }
+  check_fs "$p" refused || { echo "topology-drill: FAIL (fs probe $p leaked or never ran):"; dump_fs_diag; exit 1; }
 done
 echo "  fs: repo writable; other trees, engine home, docker.sock all invisible"
 

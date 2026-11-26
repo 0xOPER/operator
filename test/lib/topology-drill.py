@@ -16,18 +16,30 @@ usage: topology-drill.py net <broker-host:port>   (adapter jail)
 exit: 0 always -- the caller reads the verdicts
 """
 import os
+import signal
 import socket
 import sys
 
 sys.dont_write_bytecode = True
 
 NET_TIMEOUT = 4
+_CUR_DIR = ["/"]
+_SCANNED = [0]
+
+
+def _on_term(_signum, _frame):
+    print(f"topology-timeout dir={_CUR_DIR[0]} scanned={_SCANNED[0]}", flush=True)
+    sys.exit(124)
+
+
+signal.signal(signal.SIGTERM, _on_term)
 
 
 def verdict(name, ok, refused):
     """ok = the allowed twin landed; refused = the attack shape died."""
     print(f"probe {name} {'ok' if ok else 'LEAK'}"
-          if ok is not None else f"probe {name} {'refused' if refused else 'LEAK'}")
+          if ok is not None else f"probe {name} {'refused' if refused else 'LEAK'}",
+          flush=True)
 
 
 # probe addresses assemble from octets: the public tree bans literal IPv4s
@@ -113,9 +125,11 @@ def _udp_refused(host, port):
 
 
 def fs(other_marker, home_marker, docker_sock):
+    walk_root = os.environ.get("WALK_ROOT", "/")
+    repo_dir = os.environ.get("TD_REPO_DIR", "/w/repo")
     # allowed: the repo (the jail's writable world) is writable
     try:
-        with open("/w/repo/.drill-ok", "w") as f:
+        with open(os.path.join(repo_dir, ".drill-ok"), "w") as f:
             f.write("ok\n")
         verdict("repo-writable", True, None)
     except OSError:
@@ -127,12 +141,20 @@ def fs(other_marker, home_marker, docker_sock):
     marker_other = other_marker.encode()
     marker_home = home_marker.encode()
     hits = []
-    for dirpath, dirnames, files in os.walk("/"):
-        if dirpath.startswith(("/proc", "/sys", "/dev", "/w/repo")):
+    usr_dir = "/" + "usr" if walk_root == "/" else os.path.join(walk_root.rstrip("/"), "usr")
+    skip_prefixes = ("/proc", "/sys", "/dev", repo_dir)
+    for dirpath, dirnames, files in os.walk(walk_root):
+        _CUR_DIR[0] = dirpath
+        if dirpath.startswith(skip_prefixes):
             dirnames[:] = []
             continue
+        if dirpath == usr_dir:
+            # /usr is the read-only OS package tree (750k+ SDK files on CI runners);
+            # still descend into /usr/local while skipping static OS package dirs.
+            dirnames[:] = [d for d in dirnames if d == "local"]
         for fn in files:
             p = os.path.join(dirpath, fn)
+            _SCANNED[0] += 1
             try:
                 if os.path.getsize(p) > (1 << 16):
                     continue
@@ -145,7 +167,7 @@ def fs(other_marker, home_marker, docker_sock):
     verdict("markers-invisible", None, not hits)
     if hits:
         for p in hits[:3]:
-            print("HIT", p)
+            print("HIT", p, flush=True)
     verdict("docker-sock", None, not os.path.exists(docker_sock))
 
 
