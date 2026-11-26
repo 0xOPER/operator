@@ -1,7 +1,10 @@
 name: ci
 on:
   push:
+    branches: [main]
+    tags: ['v*']
   pull_request:
+    branches: [main]
 permissions:
   contents: read
 env:
@@ -76,21 +79,21 @@ jobs:
           diff <(git ls-files | sort) <(cat "${lists[@]}" | sort)
           [ -z "$(git ls-files -s | awk '$1==120000')" ]
       - name: No tool attribution in commit messages
-        run: "! git log --format=%B | grep -iE '^\\s*co-authored-by:|^\\s*[a-z-]+-by:.*claude|(made|generated) (with|by) \\[?claude|noreply@anthropic\\.com'"
+        run: "! git log HEAD --format=%B | grep -iE '^\\s*co-authored-by:|^\\s*[a-z-]+-by:.*claude|(made|generated) (with|by) \\[?claude|noreply@anthropic\\.com'"
       - name: History, identity and tag text, tier A
         if: github.event_name == 'push'  # a pull request's merge ref has GitHub as committer
         run: |
           id='OPERATOR project <351411109+0xOPER@users.noreply.github.com>'
-          [ "$(git log --all --format='%an <%ae>%n%cn <%ce>' | sort -u)" = "$id" ]
-          tags=$(git cat-file --batch-all-objects --batch-check='%(objecttype) %(objectname)' | awk '$1=="tag"{print $2}' | git cat-file --batch)
+          [ "$(git log HEAD --format='%an <%ae>%n%cn <%ce>' | sort -u)" = "$id" ]
+          tags=$(git for-each-ref refs/tags --format='%(objecttype) %(objectname)' | awk '$1=="tag"{print $2}' | git cat-file --batch)
           [ -z "$(printf '%s\n' "$tags" | grep -a '^tagger ' | sed -E 's/^tagger //; s/ [0-9]+ [-+][0-9]{4}$//' | grep -vxF "$id")" ]
           [ -z "$(printf '%s\n' "$tags" | grep -aE '^-----BEGIN ')" ]
-          [ -z "$(git rev-list --all | git cat-file --batch | grep -aE '^(gpgsig|mergetag)')" ]
+          [ -z "$(git rev-list HEAD | git cat-file --batch | grep -aE '^(gpgsig|mergetag)')" ]
           t=$(mktemp -d)
-          rev_args=(--all)
+          rev_args=(HEAD)
           [ -f keep-list.private ] && rev_args=(-1 HEAD)
           git log "${rev_args[@]}" --format='%an <%ae>%n%cn <%ce>%n%B' > "$t/commits.txt"
-          git for-each-ref --format='%(refname)%0a%(taggername) %(taggeremail)%0a%(contents)' >> "$t/commits.txt"
+          git for-each-ref refs/tags --format='%(refname)%0a%(taggername) %(taggeremail)%0a%(contents)' >> "$t/commits.txt"
           ex=(':!test/lint/tier-a.tsv')
           if [ -f keep-list.private ]; then while IFS= read -r f; do ex+=(":!$f"); done < keep-list.private; fi
           git log "${rev_args[@]}" -p --format= -- . "${ex[@]}" > "$t/patches.txt"

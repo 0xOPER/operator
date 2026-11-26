@@ -24,3 +24,7 @@ updates:
     labels:
       - "dependencies"
       - "docker"
+    ignore:
+      - dependency-name: "ubuntu"
+        versions:
+          - ">= 25.0"
