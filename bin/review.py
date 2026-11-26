@@ -1597,6 +1597,10 @@ def first_level():
             check(False, "L2c automated dispatch refuses truncated diff pack")
         except Refused as e:
             check("PACK_CAP" in str(e), f"L2c truncated refusal names PACK_CAP: {e}")
+        except (Void, spawn_mod.Void) as e:
+            # the truncated pack got PAST the guard: that is the break, whatever
+            # the unguarded path dies of afterwards (here: no stub reviewer)
+            check(False, f"L2c the truncated pack reached dispatch: {e}")
         check("repeated across attempts is signal" in body_l3
               and "delivered nothing marks its change unsafe" in body_l3
               and "support, not proof" in body_l3
