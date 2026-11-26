@@ -290,6 +290,8 @@ def scenario(keep=None):
             rc_w = spawn_mod.cmd_adapter(aw, 60)
         tx_w = open(os.path.join(aw, "transcript.out"), encoding="utf-8",
                     errors="replace").read() if os.path.isfile(os.path.join(aw, "transcript.out")) else ""
+        err_w = open(os.path.join(aw, "transcript.err"), encoding="utf-8",
+                     errors="replace").read() if os.path.isfile(os.path.join(aw, "transcript.err")) else ""
         checks += 2
         if rc_w == 0 and os.path.isfile(os.path.join(aw, "repo", "src", "a.py")):
             ok += 1
@@ -297,9 +299,9 @@ def scenario(keep=None):
                 and not os.path.exists("/proc/outside-demo"):
             ok += 1
         elif os.path.exists(os.path.join(aw, "repo", "src", "a.py")) is False:
-            raise Refused("the stub's write never landed")
+            raise Refused(f"the stub's write never landed (rc_w={rc_w} out={tx_w[-200:]!r} err={err_w[-200:]!r})")
         else:
-            raise Refused("the outside write wasn't refused and reported")
+            raise Refused(f"the outside write wasn't refused and reported (rc_w={rc_w} out={tx_w[-200:]!r} err={err_w[-200:]!r})")
         if spawn_mod.seal(aw) != "sealed" or spawn_mod.import_gate(aw)[0] != "OK":
             raise Refused("the stub's work didn't seal and gate")
         with open(os.path.join(aw, "collected.json"), "w", encoding="utf-8") as f:

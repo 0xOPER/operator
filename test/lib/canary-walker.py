@@ -10,6 +10,7 @@ usage: canary-walker.py <mark-file>  (or env CANARY_MARK; WALK_ROOT default /)
 exit: 0 always -- the caller reads the counter
 """
 import os
+import signal
 import sys
 
 sys.dont_write_bytecode = True
@@ -24,11 +25,22 @@ else:
     mark = os.environ["CANARY_MARK"].encode()
     SKIP = set()
 hits = []
+scanned = [0]
+cur_dir = [root]
+
+
+def _on_term(_signum, _frame):
+    print(f"canary-timeout dir={cur_dir[0]} scanned={scanned[0]} hits={len(hits)}", flush=True)
+    sys.exit(124)
+
+
+signal.signal(signal.SIGTERM, _on_term)
 
 
 def scan(path):
     if os.path.abspath(path) in SKIP:
         return
+    scanned[0] += 1
     try:
         with open(path, "rb") as f:
             if mark in f.read(1 << 16):
@@ -38,9 +50,14 @@ def scan(path):
 
 
 for dirpath, dirnames, files in os.walk(root):
+    cur_dir[0] = dirpath
     if dirpath.startswith(("/proc", "/sys", "/dev")):
         dirnames[:] = []
         continue
+    if root == "/" and dirpath == "/usr":
+        # /usr is the read-only OS package tree (750k+ SDK files on CI runners);
+        # still descend into /usr/local while skipping static OS package dirs.
+        dirnames[:] = [d for d in dirnames if d == "local"]
     for fn in files:
         p = os.path.join(dirpath, fn)
         try:
@@ -56,6 +73,7 @@ if os.environ.get("WALK_PROC", "1") != "0":
         for limb in ("environ", "cmdline"):
             scan(f"/proc/{pid}/{limb}")
 
-print(f"canary-hits={len(hits)}")
+print(f"canary-scanned={scanned[0]}", flush=True)
+print(f"canary-hits={len(hits)}", flush=True)
 for p in hits[:5]:
-    print("HIT", p)
+    print("HIT", p, flush=True)

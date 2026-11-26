@@ -132,8 +132,26 @@ jobs:
           persist-credentials: false
       - name: Build image and run demo and check through wrapper
         run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           scripts/docker-operator.sh --selftest
-          scripts/docker-operator.sh --rebuild --allow-linux-unconfined --ephemeral-state demo run
+          if ! scripts/docker-operator.sh --rebuild --allow-linux-unconfined --ephemeral-state demo run; then
+            img="operator-control-plane:local-$(id -u)-$(id -g)"
+            docker run --rm --init \
+              --cap-add SYS_ADMIN \
+              --cap-add NET_ADMIN \
+              --security-opt seccomp=unconfined \
+              --security-opt apparmor=unconfined \
+              --security-opt systempaths=unconfined \
+              --entrypoint bash "$img" -c '
+                /work/operator/bin/operator.sh demo run --keep /operator-state/keep || true
+                cd /operator-state/keep || exit 1
+                for f in supervisor.json transcript.out transcript.err; do
+                  echo "=== demo-w/$f ==="
+                  cat "home/runs/demo-run/attempts/demo-w/$f" 2>&1 || true
+                done
+              '
+            exit 1
+          fi
           scripts/docker-operator.sh --allow-linux-unconfined --ephemeral-state check --json | python3 -c 'import json,sys; d=json.load(sys.stdin); bad=[c["check"] for c in d["checks"] if not c["ok"] and c["check"] != "signers"]; assert not bad, bad'
 
   conformance:

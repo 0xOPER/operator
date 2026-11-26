@@ -50,8 +50,8 @@ PY
 command -v python3 >/dev/null 2>&1 || die "no python3"
 command -v bwrap >/dev/null 2>&1 || die "topology-drill is a first-level test: bwrap must exist"
 
-MARK_O="TD-O-$(tr -dc a-f0-9 </dev/urandom | head -c 10)"
-MARK_H="TD-H-$(tr -dc a-f0-9 </dev/urandom | head -c 10)"
+MARK_O="TD-O-$(python3 -c 'import secrets; print(secrets.token_hex(5))')"
+MARK_H="TD-H-$(python3 -c 'import secrets; print(secrets.token_hex(5))')"
 D=$(mktemp -d "${TMPDIR:-/tmp}/td.XXXX") || die "no scratch"
 [ -n "${TD_KEEP:-}" ] || trap 'rm -rf "${D:?}"' EXIT
 mkdir -p "$D/oh"

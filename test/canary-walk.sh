@@ -43,7 +43,7 @@ selftest() {
 command -v python3 >/dev/null 2>&1 || die "no python3"
 command -v bwrap >/dev/null 2>&1 || die "canary-walk is a first-level test: bwrap must exist on the host"
 
-MARK="CANARY-$(tr -dc a-f0-9 </dev/urandom | head -c 12)"
+MARK="CANARY-$(python3 -c 'import secrets; print(secrets.token_hex(6))')"
 D=$(mktemp -d "${TMPDIR:-/tmp}/cw.XXXX") || die "no scratch"
 [ -n "${CW_KEEP:-}" ] || trap 'rm -rf "${D:?}"' EXIT
 mkdir -p "$D/oh"
@@ -88,8 +88,15 @@ timeout -k 10 150 python3 "$ROOT/bin/spawn.py" worker "$ADIR" \
   --timeout 120 -- python3 -I /w/repo/walker.py /w/repo/mark.txt > "$D/walk.out" 2>&1 || true
 grep -q "canary-hits=0" "$ADIR/transcript.out" 2>/dev/null || {
   echo "canary-walk: FAIL (the jail sees canaries or the walker never ran):"
-  tail -6 "$ADIR/transcript.out" 2>/dev/null | sed 's/^/    /'
-  tail -2 "$D/walk.out" 2>/dev/null | sed 's/^/    /'; exit 1; }
+  echo "    --- walk.out ---"
+  sed 's/^/    /' "$D/walk.out" 2>/dev/null
+  echo "    --- supervisor.json ---"
+  sed 's/^/    /' "$ADIR/supervisor.json" 2>/dev/null
+  echo "    --- transcript.out ---"
+  tail -20 "$ADIR/transcript.out" 2>/dev/null | sed 's/^/    /'
+  echo "    --- transcript.err ---"
+  tail -20 "$ADIR/transcript.err" 2>/dev/null | sed 's/^/    /'
+  exit 1; }
 echo "  walker: zero canaries across the visible filesystem and /proc"
 
 # --- checks 3+4: the egress law -- the broker is the only door. A probe
