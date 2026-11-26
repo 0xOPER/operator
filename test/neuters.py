@@ -1473,6 +1473,12 @@ NEUTERS = [
      '[ "$bad" -eq 0 ] || exit 1',
      'true',
      "scripts/setup-hooks.sh --selftest"),
+    # the battery runs inside the room (tree at /work/operator): an absolute
+    # host path cannot exist there, and every Linux push was refused
+    ("HK-battery-path", ".githooks/pre-push",
+     'cleanroom.sh" scripts/run-all-selftests.sh',
+     'cleanroom.sh" "$ROOT/scripts/run-all-selftests.sh"',
+     "scripts/setup-hooks.sh --first-level"),
     ("HK-tierb-opt", ".githooks/pre-push",
      'if [ -f "$tb" ]; then\n  tb_args=(--tier-b "$tb")\nfi',
      'tb_args=(--tier-b "$tb")',
