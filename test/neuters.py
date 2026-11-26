@@ -1494,4 +1494,7 @@ NEUTERS = [
     ("BK-client-gone-log", BK,
      '                    except OSError:\n                        client_gone = True',
      '                    except ValueError:\n                        client_gone = True'),
+    ("CT-pytest-unwrapped", CT,
+     '            if re.search(r"(?<![A-Za-z0-9_.-])pytest(?![A-Za-z0-9_])", cmd_pt) \\\n                    and _parse_pytest_cmd(cmd_pt, row.get("runner")) is None:',
+     '            if False:'),
 ]

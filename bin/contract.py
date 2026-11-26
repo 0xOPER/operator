@@ -410,6 +410,16 @@ def load(prog):
             src = src_row.get("oracle_from")
         if row.get("evidence") == "sealed" and not row["oracle"]:
             raise Finding(f"row {rid}: sealed evidence via oracle_from resolved to an empty oracle")
+        if row["kind"] == "run" and row.get("driver") != "external" \
+                and row["oracle"] and row.get("runner") != "raw":
+            cmd_pt = row["cmd"]
+            if re.search(r"(?<![A-Za-z0-9_.-])pytest(?![A-Za-z0-9_])", cmd_pt) \
+                    and _parse_pytest_cmd(cmd_pt, row.get("runner")) is None:
+                raise Finding(
+                    f"row {rid}: sealed pytest command {cmd_pt!r} uses shell syntax or "
+                    "an unwrapped invocation that bypasses pytest-guard; write a direct "
+                    "'[env K=V ...] [<python> -m] pytest ...' command (or set "
+                    'runner = "raw" only if intentionally unguarded)')
         ctl = row.get("control")
         if ctl is not None:
             if not isinstance(ctl, str) or ctl not in by_id:
@@ -899,6 +909,12 @@ def _apply_candidate_diff(repo, pin, commit, export, allowed_writes, resolved_or
                 os.chmod(dst, 0o755)
 
 
+_RESERVED_GUARD_ENV = frozenset({
+    "LD_PRELOAD", "LD_LIBRARY_PATH", "PYTHONINSPECT", "PYTHONSTARTUP",
+    "PYTHONHOME", "HOME", "PATH", "PROG",
+})
+
+
 def _parse_pytest_cmd(cmd_str, runner_override=None):
     if any(ch in cmd_str for ch in (";", "|", "&", "`", "$(", ">", "<", "\n", "\r")):
         return None
@@ -908,20 +924,46 @@ def _parse_pytest_cmd(cmd_str, runner_override=None):
         return None
     if not toks:
         return None
+    env_pairs = []
+    py_path = []
     if toks[0] == "env":
         toks = toks[1:]
-        while toks and "=" in toks[0] and not toks[0].startswith("-"):
-            toks = toks[1:]
-        if not toks:
-            return None
-    if toks[0] == "pytest":
-        return "python3", toks[1:]
-    if toks[0] in ("python", "python3") and "-m" in toks:
-        idx = toks.index("-m")
-        if idx + 1 < len(toks) and toks[idx + 1] == "pytest":
-            return toks[0], toks[idx + 2:]
+    while toks and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", toks[0]):
+        k, v = toks[0].split("=", 1)
+        if k == "PYTHONPATH":
+            py_path = [p for p in v.split(":") if p]
+        elif k not in _RESERVED_GUARD_ENV:
+            env_pairs.append((k, v))
+        toks = toks[1:]
+    if not toks:
+        return None
+    base0 = os.path.basename(toks[0])
+    if re.fullmatch(r"pytest(?:-\d+(?:\.\d+)*)?", base0):
+        py_exe = os.path.join(os.path.dirname(toks[0]), "python") if "/" in toks[0] else "python3"
+        return py_exe, ["-I"], toks[1:], tuple(env_pairs), tuple(py_path)
+    if re.fullmatch(r"python(?:\d+(?:\.\d+)*)?", base0):
+        py_flags = ["-I"]
+        i = 1
+        while i < len(toks) and toks[i] != "-m":
+            fl = toks[i]
+            if fl in ("-I", "-s", "-S", "-E", "-P"):
+                i += 1
+            elif fl in ("-B", "-O", "-OO", "-u", "-q", "-v", "-b", "-d"):
+                if fl not in py_flags:
+                    py_flags.append(fl)
+                i += 1
+            elif fl in ("-W", "-X") and i + 1 < len(toks):
+                py_flags.extend((fl, toks[i + 1]))
+                i += 2
+            elif fl.startswith(("-W", "-X")) and len(fl) > 2:
+                py_flags.append(fl)
+                i += 1
+            else:
+                return None
+        if i + 1 < len(toks) and toks[i] == "-m" and toks[i + 1] == "pytest":
+            return toks[0], py_flags, toks[i + 2:], tuple(env_pairs), tuple(py_path)
     if runner_override == "pytest":
-        return "python3", toks
+        return "python3", ["-I"], toks, tuple(env_pairs), tuple(py_path)
     return None
 
 
@@ -1174,8 +1216,9 @@ def run_check(row, prog, repo, commit, arm, results, prog_key, record_log=True, 
                 and row.get("runner") != "raw")
             else None
         )
+        guard_env = ()
         if pt_parsed is not None:
-            py_exe, pt_args = pt_parsed
+            py_exe, py_flags, pt_args, guard_env, py_path = pt_parsed
             guard_key = os.urandom(32).hex().encode("ascii")
             g_in = os.path.join(tmp, "g_in")
             g_meta = os.path.join(tmp, "g_meta")
@@ -1183,7 +1226,10 @@ def run_check(row, prog, repo, commit, arm, results, prog_key, record_log=True, 
             with open(g_in, "wb") as kf:
                 kf.write(guard_key + b"\n")
             with open(g_meta, "w", encoding="utf-8") as mf:
-                json.dump({"oracle_roots": [os.path.join("/w/export", o) for o, _ in resolved_oracles]}, mf)
+                json.dump({
+                    "oracle_roots": [os.path.join("/w/export", o) for o, _ in resolved_oracles],
+                    "pythonpath": list(py_path),
+                }, mf)
             open(rec_host, "wb").close()
             os.chmod(g_in, 0o600)
             os.chmod(rec_host, 0o600)
@@ -1194,7 +1240,7 @@ def run_check(row, prog, repo, commit, arm, results, prog_key, record_log=True, 
                 "--bind", g_meta, "/w/.op-meta",
                 "--bind", rec_host, "/w/.op-receipt",
             ]
-            inner_cmd = [py_exe, "-I", "/engine/pytest-guard.py", *pt_args]
+            inner_cmd = [py_exe, *py_flags, "/engine/pytest-guard.py", *pt_args]
         etc = generated_etc(tmp)
         env_dir = os.path.join(prog, "env") if os.path.isdir(os.path.join(prog, "env")) else None
         extra = list(binds)
@@ -1206,12 +1252,16 @@ def run_check(row, prog, repo, commit, arm, results, prog_key, record_log=True, 
         inner_limits = ["prlimit", f"--nproc={NPROC}"]
         if not row.get("gpu"):
             inner_limits.append(f"--as={as_cap()}")
+        base_setenvs = (
+            ("HOME", "/tmp"), ("PATH", "/usr/bin:/bin"),
+            ("PROG", "/prog"), ("NO_COLOR", "1"),
+            ("TERM", "dumb"), ("PYTHONSAFEPATH", "1"),
+            ("PYTHONNOUSERSITE", "1"),
+            ("PYTHONDONTWRITEBYTECODE", "1"),
+            *guard_env,
+        )
         argv = ["prlimit", f"--fsize={FSIZE}", "--core=0"] + \
-            bwrap_args(binds=extra, setenvs=(("HOME", "/tmp"), ("PATH", "/usr/bin:/bin"),
-                                             ("PROG", "/prog"), ("NO_COLOR", "1"),
-                                             ("TERM", "dumb"), ("PYTHONSAFEPATH", "1"),
-                                             ("PYTHONNOUSERSITE", "1"),
-                                             ("PYTHONDONTWRITEBYTECODE", "1")),
+            bwrap_args(binds=extra, setenvs=base_setenvs,
                        chdir="/w/export", export=export, export_dest="/w/export") + \
             inner_limits + inner_cmd
         rc, kept = run_capped(argv, row["timeout"], OUT_CAP)
@@ -2673,6 +2723,28 @@ deps = ["tests.frozen"]
                 os.environ.pop("CALL_LOG_FILE", None)
             else:
                 os.environ["CALL_LOG_FILE"] = old_clf
+        # K8 (H3) _parse_pytest_cmd wraps interpreter paths, python3.N, /env/bin/pytest, and env vars;
+        # load() refuses unwrapped sealed pytest commands (e.g. 'pytest -q ; true')
+        mig_doc = load(os.path.join(ROOT, "profiles", "migration"))
+        mig_pt = _parse_pytest_cmd(mig_doc["by_id"]["tests.pass"]["cmd"])
+        p_full = _parse_pytest_cmd("env FOO=bar PYTHONPATH=custom_lib python3.12 -B -m pytest -q tests")
+        p_bin = _parse_pytest_cmd("/env/bin/pytest -q")
+        check(mig_pt is not None and mig_pt[0] == "/env/bin/python"
+              and p_full is not None and p_full[0] == "python3.12" and "-B" in p_full[1]
+              and p_full[3] == (("FOO", "bar"),) and p_full[4] == ("custom_lib",)
+              and p_bin is not None and p_bin[0] == "/env/bin/python",
+              f"K8a _parse_pytest_cmd handles interpreter paths, flags, and env: mig={mig_pt} full={p_full} bin={p_bin}")
+        r_unwrapped = run_verb("validate", prog(
+            'schema = 2\n[[row]]\nid = "r1"\nstage = "s"\ndesc = "d"\nkind = "run"\n'
+            'seat = "w"\nreviewer = "r"\ncmd = "pytest -q ; true"\noracle = ["tests"]\n'
+        ))
+        r_raw_opt = run_verb("validate", prog(
+            'schema = 2\n[[row]]\nid = "r1"\nstage = "s"\ndesc = "d"\nkind = "run"\n'
+            'seat = "w"\nreviewer = "r"\ncmd = "pytest -q ; true"\noracle = ["tests"]\nrunner = "raw"\n'
+        ))
+        check(r_unwrapped.returncode == 1 and "bypasses pytest-guard" in r_unwrapped.stderr
+              and r_raw_opt.returncode == 0,
+              f"K8b unwrapped sealed pytest refused at validate unless runner='raw': rc={r_unwrapped.returncode}/{r_raw_opt.returncode}")
     finally:
         shutil.rmtree(adv_base, ignore_errors=True)
 

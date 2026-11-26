@@ -38,12 +38,16 @@ def _bootstrap():
         kf.truncate(0)
 
     oracle_roots = ()
+    extra_pythonpath = ()
     if os.path.isfile(meta_path):
         try:
             with open(meta_path, encoding="utf-8") as mf:
                 mdoc = json.load(mf)
             oracle_roots = tuple(
                 os.path.normpath(p) for p in (mdoc.get("oracle_roots") or ()) if isinstance(p, str)
+            )
+            extra_pythonpath = tuple(
+                p for p in (mdoc.get("pythonpath") or ()) if isinstance(p, str) and p
             )
         finally:
             try:
@@ -202,8 +206,12 @@ def _bootstrap():
     plugin = _GuardPlugin()
     gc.collect()
     sys.addaudithook(_audit)
-    # Prepend /w/export only after runner snapshot and audit hook are active
+    # Prepend /w/export (and any authored PYTHONPATH entries) only after runner snapshot and audit hook are active
     sys.path.insert(0, "/w/export")
+    for pp in reversed(extra_pythonpath):
+        full_pp = pp if os.path.isabs(pp) else os.path.normpath(os.path.join("/w/export", pp))
+        if full_pp not in sys.path:
+            sys.path.insert(0, full_pp)
     rc = pytest.main(["--rootdir=/w/export", *sys.argv[1:]], plugins=[plugin])
     return int(rc) if isinstance(rc, int) else int(getattr(rc, "value", 1))
 
