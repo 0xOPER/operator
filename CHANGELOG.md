@@ -9,6 +9,7 @@ All notable changes to OPERATOR are documented in this file.
 - `test/neuter.py`: a row that does not die prints the last lines of the mutated test's output, so a VOID or a survivor can be told apart from an environment that broke the test.
 
 ### Documentation & Branding
+- Added `docs/charter.md`: the charter design in progress — the schema, signed environments, reach profiles, the manager's verbs, the reserved questions with every escalation kind mapped to a stop class, the default charters, the control audit and the adopted decisions. Design only; nothing in it changes a `v0.1.0` claim.
 - Rebuilt `assets/logo.svg` from exact measured geometry and `assets/banner.svg` at 880 px width with outlined Chakra Petch Bold (OFL) wordmark paths.
 - Added an architectural comparison of common coding-agent orchestrator patterns and a clickable narrated overview video preview (`assets/video-preview.svg`) to `README.md`.
 - Repaired `README.md` and `docs/quickstart.md` command sequences (passing the program directory positionally instead of `cd`ing into a directory without `bin/`), added the real-CLI and `[seat.op]` setup step, and aligned `ssh-keygen` passphrase usage.

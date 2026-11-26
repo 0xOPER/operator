@@ -68,6 +68,7 @@ config/adapters/stub.toml
 config/adapters/zcode.toml
 docs/architecture.md
 docs/authoring.md
+docs/charter.md
 docs/quickstart.md
 keep-list
 profiles/migration/contract.toml
