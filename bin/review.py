@@ -961,6 +961,17 @@ def show(run_name, task=None):
 # --- selftest ------------------------------------------------------------------------------
 
 
+def _void_after_failure(bad, e):
+    """An arm that VOIDs on a clean sheet is VOID (re-raised: the instrument
+    could not speak). After a recorded failure it is evidence: a break that
+    lets a forged verdict DELIVER moves the fixture out from under the arms
+    after it, and the failure already seen must not be lost."""
+    if not bad[0]:
+        raise e
+    print(f"FAIL the suite voided after a recorded failure: {e}", file=sys.stderr)
+    bad[0] += 1
+
+
 def selftest():
     import shutil
     ok, bad = [0], [0]
@@ -1289,6 +1300,8 @@ def selftest():
         check(p.returncode in (1, 2) and "one of the arguments" not in p.stderr,
               f"J2 it refuses on the RUN law, not the parser: "
               f"{(p.stderr or p.stdout)[:120]!r}")
+    except (Void, spawn_mod.Void) as e:
+        _void_after_failure(bad, e)
     finally:
         if old_home is None:
             del os.environ["OPERATOR_HOME"]
@@ -1590,6 +1603,8 @@ def first_level():
               and "Attempts on this task so far: 2 (this pack carries a10)" in body_l3,
               "L4 the evidence doctrine and the honest attempt count ride the "
               f"rendered pack: {body_l3[:200]!r}")
+    except (Void, spawn_mod.Void) as e:
+        _void_after_failure(bad, e)
     finally:
         if old_home is None:
             os.environ.pop("OPERATOR_HOME", None)

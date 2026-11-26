@@ -4,6 +4,10 @@ All notable changes to OPERATOR are documented in this file.
 
 ## Unreleased (`main`)
 
+### Fixes
+- `bin/review.py`: both selftest suites now report a failure (exit 1) when an arm crashes with VOID after an earlier arm already recorded a failure. A break that lets a forged verdict deliver moves the fixture out from under the arms after it; the suite used to exit 2 and forget the failure it had printed, which is why the ratchet reported four review rows as VOID.
+- `test/neuter.py`: a row that does not die prints the last lines of the mutated test's output, so a VOID or a survivor can be told apart from an environment that broke the test.
+
 ### Documentation & Branding
 - Rebuilt `assets/logo.svg` from exact measured geometry and `assets/banner.svg` at 880 px width with outlined Chakra Petch Bold (OFL) wordmark paths.
 - Added an architectural comparison of common coding-agent orchestrator patterns and a clickable narrated overview video preview (`assets/video-preview.svg`) to `README.md`.

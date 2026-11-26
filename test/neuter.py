@@ -78,6 +78,12 @@ def _force_rmtree(p):
     shutil.rmtree(p, ignore_errors=True)
 
 
+def why(out):
+    """The last lines of a test's output: what a row that did not die was saying."""
+    lines = [ln.strip() for ln in out.decode("utf-8", "replace").splitlines() if ln.strip()]
+    return " | ".join(ln[:200] for ln in lines[-3:])
+
+
 def run_test(tree, tool, cmd, tmpdir=None):
     argv = [str(tree / cmd[0]), *cmd[1:]] if cmd else [str(tree / tool), "--selftest"]
     env = {**os.environ, "OPERATOR_AST_MUTANTS": "1"}
@@ -86,13 +92,13 @@ def run_test(tree, tool, cmd, tmpdir=None):
     try:
         r = subprocess.run(argv, cwd=tree, capture_output=True, timeout=TIMEOUT,
                            env=env, stdin=subprocess.DEVNULL)
-    except subprocess.TimeoutExpired:
-        return 124, False
+    except subprocess.TimeoutExpired as e:
+        return 124, False, "timed out; last output: " + why((e.stdout or b"") + (e.stderr or b""))
     out = (r.stdout or b"") + (r.stderr or b"")
     has_fail = any(m in out for m in (b"FAIL", b"AssertionError", b"Traceback"))
     # rc 0 with no OK line: the tool failed and swallowed it
     rc = r.returncode if r.returncode or b": OK" in r.stdout else 99
-    return rc, has_fail
+    return rc, has_fail, why(out)
 
 
 def parses(path):
@@ -170,7 +176,7 @@ def main():
         try:
             stmp = pathlib.Path(d0, "tmp")
             stmp.mkdir()
-            rc, _ = run_test(copy_tree(d0), tool, cmd, tmpdir=stmp)
+            rc = run_test(copy_tree(d0), tool, cmd, tmpdir=stmp)[0]
             return key, rc
         finally:
             _force_rmtree(d0)
@@ -185,7 +191,7 @@ def main():
             if res is None:
                 print(f"neuter: VOID, {id_} doesn't parse, so a failure would prove nothing", file=sys.stderr)
                 return 2
-            rc, has_fail = res
+            rc, has_fail, note = res
             if rc == 0:
                 state = "SURVIVED"
                 survivors.add(id_)
@@ -201,7 +207,11 @@ def main():
             else:
                 state = f"RC={rc}"
                 voids.add(id_)
-            print(f"{state:9} {id_:12} {tool}", flush=True)
+            # A row that did not die says why: the verdict line alone cannot be told
+            # apart from an environment that broke the test (first-level rows in a
+            # room that cannot nest bwrap) from a row that no longer sees its break
+            line = f"{state:9} {id_:12} {tool}"
+            print(line if state == "killed" else f"{line}\n          why: {note}", flush=True)
     new_survivors = survivors - allowed_survivors
     if a.only:
         print(f"only={len(a.only)} killed={sum(killed_by_tool.values())} survived={len(survivors)} timeout={len(timeouts)} void={len(voids)}")
