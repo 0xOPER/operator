@@ -169,7 +169,7 @@ def _verify_client_seat(headers, seat_key):
 
 
 def log_row(path, log, **kv):
-    for opt_k in ("seat", "attempt", "model", "cost_usd"):
+    for opt_k in ("seat", "attempt", "model", "cost_usd", "client_gone"):
         if kv.get(opt_k) is None:
             kv.pop(opt_k, None)
     row = {"t": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -224,11 +224,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def _refuse(self, code, why):
         body = json.dumps({"error": why}).encode()
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except OSError:
+            self.close_connection = True
         return None
 
     def do_POST(self):
@@ -319,7 +322,7 @@ class Handler(BaseHTTPRequestHandler):
                                               if "?" in self.path else ""),
                        body=body, headers=headers)
             resp = up.getresponse()
-        except OSError as e:
+        except (OSError, http.client.HTTPException) as e:
             self._refuse(502, f"the origin refused: {type(e).__name__}")
             log_row(path, self.server.log, status=502, seat=client_seat,
                     attempt=client_attempt, model=req_model or None)
@@ -329,10 +332,18 @@ class Handler(BaseHTTPRequestHandler):
         sent = 0
         usage = None
         capped = False
+        client_gone = False
         if is_json:
             # Non-streaming JSON response (stream: false): buffer up to max_body
             # so usage metering and turn_cap apply identically to SSE turns.
-            raw = resp.read(self.server.max_body + 1)
+            try:
+                raw = resp.read(self.server.max_body + 1)
+            except (OSError, http.client.HTTPException) as e:
+                up.close()
+                self._refuse(502, f"origin JSON read failed: {type(e).__name__}")
+                log_row(path, self.server.log, status=502, out_bytes=0,
+                        seat=client_seat, attempt=client_attempt, model=req_model or None)
+                return
             up.close()
             if len(raw) > self.server.max_body:
                 self._refuse(502, "origin JSON response exceeds broker cap")
@@ -360,26 +371,32 @@ class Handler(BaseHTTPRequestHandler):
                         or (usd_cap > 0 and (prev_usd + cur_usd) > usd_cap):
                     capped = True
             if capped:
-                self._refuse(429, "turn ceiling exceeded")
                 log_row(path, self.server.log, status=429, out_bytes=0,
                         usage=usage, capped=True, seat=client_seat,
                         attempt=client_attempt, model=req_model or None,
                         cost_usd=cost_usd)
+                self._refuse(429, "turn ceiling exceeded")
                 return
-            self.send_response(resp.status)
-            for k, v in resp.getheaders():
-                if k.lower() in ("transfer-encoding", "connection", "content-length"):
-                    continue
-                self.send_header(k, v)
-            self.send_header("Content-Length", str(len(raw)))
-            self.end_headers()
-            self.wfile.write(raw)
-            log_row(path, self.server.log, status=resp.status, out_bytes=len(raw),
-                    usage=usage, capped=None, seat=client_seat,
-                    attempt=client_attempt, model=req_model or None,
-                    cost_usd=cost_usd)
+            # Log BEFORE writing to the client so an early client disconnect
+            # never drops a billed JSON turn row.
+            try:
+                self.send_response(resp.status)
+                for k, v in resp.getheaders():
+                    if k.lower() in ("transfer-encoding", "connection", "content-length"):
+                        continue
+                    self.send_header(k, v)
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+            except OSError:
+                client_gone = True
+                self.close_connection = True
+            log_row(path, self.server.log, status=resp.status, out_bytes=0 if client_gone else len(raw),
+                    usage=usage, capped=None,
+                    client_gone=True if client_gone else None,
+                    seat=client_seat, attempt=client_attempt,
+                    model=req_model or None, cost_usd=cost_usd)
             return
-        self.send_response(resp.status)
         chunked = False
         length = None
         for k, v in resp.getheaders():
@@ -390,113 +407,154 @@ class Handler(BaseHTTPRequestHandler):
                 elif lk == "content-length":
                     length = v
                 continue
-            self.send_header(k, v)
-        if chunked:
-            self.send_header("Transfer-Encoding", "chunked")
-        elif length:
-            # the origin framed it with a length: the client gets the same
-            # frame, or it would wait on the wire for a body that already ended
-            self.send_header("Content-Length", length)
-        self.end_headers()
-        tail = b""   # incomplete trailing SSE line carried across chunks (never frozen at 64 KiB)
-        read_fn = getattr(resp, "read1", resp.read)
-        while True:
-            data = read_fn(16384)
-            if not data:
-                break
-            sent += len(data)
-            # incremental SSE line scan over the ENTIRE stream (even past 64 KiB):
-            # the last usage-bearing event merges totals, while early message_start
-            # cuts mid-stream the instant turn_cap is crossed.
-            buf = tail + data
-            lines = buf.split(b"\n")
-            tail = lines.pop()
-            if len(tail) > 1 << 20:
-                tail = tail[-(1 << 20):]
-            if b'"usage"' in buf:
-                for ln in lines:
-                    if b'"usage"' in ln and b"data:" in ln \
-                            and (b"message_delta" in ln or b"message_start" in ln
-                                 or b"response.completed" in ln):
-                        try:
-                            d = json.loads(ln.split(b"data:", 1)[1].strip())
-                            if not req_model and isinstance(d, dict):
-                                rm_c = (d.get("model")
-                                        or (d.get("message") or {}).get("model")
-                                        or (d.get("response") or {}).get("model"))
-                                if isinstance(rm_c, str):
-                                    req_model = rm_c[:128]
-                            u = _extract_usage(d)
-                            if isinstance(u, dict):
-                                usage = _merge_usage(usage, u)
-                                if cap and sum([
-                                        prev_in,
-                                        *(int(usage.get(k) or 0) for k in (
-                                            "input_tokens",
-                                            "cache_read_input_tokens",
-                                            "cache_creation_input_tokens")
-                                          if isinstance(usage.get(k), (int, float)))
-                                ]) > cap:
-                                    # the turn's context crossed the
-                                    # ceiling: CUT the stream here -- the
-                                    # triggering chunk never reaches the
-                                    # client, the turn fails, the row says
-                                    # so (a clip would lie about what the
-                                    # model sent)
-                                    capped = True
-                                    break
-                                if out_cap and (prev_out + _output_tokens_of(usage)) > out_cap:
-                                    capped = True
-                                    break
-                                if usd_cap > 0 and (prev_usd + (_compute_cost_usd(req_model, usage) or 0.0)) > usd_cap:
-                                    capped = True
-                                    break
-                        except (ValueError, IndexError, AttributeError):
-                            pass
-            if capped:
-                break
-            if chunked:
-                self.wfile.write(f"{len(data):x}\r\n".encode() + data + b"\r\n")
-            else:
-                self.wfile.write(data)
-        if not capped and tail and b'"usage"' in tail and b"data:" in tail \
-                and (b"message_delta" in tail or b"message_start" in tail
-                     or b"response.completed" in tail):
+        try:
             try:
-                dt = json.loads(tail.split(b"data:", 1)[1].strip())
-                if not req_model and isinstance(dt, dict):
-                    rm_t = (dt.get("model")
-                            or (dt.get("message") or {}).get("model")
-                            or (dt.get("response") or {}).get("model"))
-                    if isinstance(rm_t, str):
-                        req_model = rm_t[:128]
-                u = _extract_usage(dt)
-                if isinstance(u, dict):
-                    usage = _merge_usage(usage, u)
-                    if cap and (prev_in + _input_tokens_of(usage)) > cap:
-                        capped = True
-                    if out_cap and (prev_out + _output_tokens_of(usage)) > out_cap:
-                        capped = True
-                    if usd_cap > 0 and (prev_usd + (_compute_cost_usd(req_model, usage) or 0.0)) > usd_cap:
-                        capped = True
-            except (ValueError, IndexError, AttributeError):
+                self.send_response(resp.status)
+                for k, v in resp.getheaders():
+                    if k.lower() in ("transfer-encoding", "connection", "content-length"):
+                        continue
+                    self.send_header(k, v)
+                if chunked:
+                    self.send_header("Transfer-Encoding", "chunked")
+                elif length:
+                    # the origin framed it with a length: the client gets the same
+                    # frame, or it would wait on the wire for a body that already ended
+                    self.send_header("Content-Length", length)
+                self.end_headers()
+            except OSError:
+                client_gone = True
+                self.close_connection = True
+                if getattr(up, "sock", None) is not None:
+                    try:
+                        up.sock.settimeout(1.0)
+                    except OSError:
+                        pass
+            tail = b""   # incomplete trailing SSE line carried across chunks (never frozen at 64 KiB)
+            read_fn = getattr(resp, "read1", resp.read)
+            drain_deadline = (time.monotonic() + 1.0) if client_gone else None
+            while True:
+                if drain_deadline is not None and time.monotonic() >= drain_deadline:
+                    break
+                try:
+                    data = read_fn(16384)
+                except (OSError, http.client.HTTPException):
+                    self.close_connection = True
+                    break
+                if not data:
+                    break
+                # incremental SSE line scan over the ENTIRE stream (even past 64 KiB):
+                # the last usage-bearing event merges totals, while early message_start
+                # cuts mid-stream the instant turn_cap is crossed.
+                buf = tail + data
+                lines = buf.split(b"\n")
+                tail = lines.pop()
+                if len(tail) > 1 << 20:
+                    tail = tail[-(1 << 20):]
+                if b'"usage"' in buf:
+                    for ln in lines:
+                        if b'"usage"' in ln and b"data:" in ln \
+                                and (b"message_delta" in ln or b"message_start" in ln
+                                     or b"response.completed" in ln):
+                            try:
+                                d = json.loads(ln.split(b"data:", 1)[1].strip())
+                                if not req_model and isinstance(d, dict):
+                                    rm_c = (d.get("model")
+                                            or (d.get("message") or {}).get("model")
+                                            or (d.get("response") or {}).get("model"))
+                                    if isinstance(rm_c, str):
+                                        req_model = rm_c[:128]
+                                u = _extract_usage(d)
+                                if isinstance(u, dict):
+                                    usage = _merge_usage(usage, u)
+                                    if cap and sum([
+                                            prev_in,
+                                            *(int(usage.get(k) or 0) for k in (
+                                                "input_tokens",
+                                                "cache_read_input_tokens",
+                                                "cache_creation_input_tokens")
+                                              if isinstance(usage.get(k), (int, float)))
+                                    ]) > cap:
+                                        # the turn's context crossed the
+                                        # ceiling: CUT the stream here -- the
+                                        # triggering chunk never reaches the
+                                        # client, the turn fails, the row says
+                                        # so (a clip would lie about what the
+                                        # model sent)
+                                        capped = True
+                                        break
+                                    if out_cap and (prev_out + _output_tokens_of(usage)) > out_cap:
+                                        capped = True
+                                        break
+                                    if usd_cap > 0 and (prev_usd + (_compute_cost_usd(req_model, usage) or 0.0)) > usd_cap:
+                                        capped = True
+                                        break
+                            except (ValueError, IndexError, AttributeError):
+                                pass
+                if capped:
+                    break
+                if not client_gone:
+                    try:
+                        if chunked:
+                            self.wfile.write(f"{len(data):x}\r\n".encode() + data + b"\r\n")
+                        else:
+                            self.wfile.write(data)
+                        sent += len(data)
+                    except OSError:
+                        client_gone = True
+                        self.close_connection = True
+                        drain_deadline = time.monotonic() + 1.0
+                        if getattr(up, "sock", None) is not None:
+                            try:
+                                up.sock.settimeout(1.0)
+                            except OSError:
+                                pass
+            if not capped and tail and b'"usage"' in tail and b"data:" in tail \
+                    and (b"message_delta" in tail or b"message_start" in tail
+                         or b"response.completed" in tail):
+                try:
+                    dt = json.loads(tail.split(b"data:", 1)[1].strip())
+                    if not req_model and isinstance(dt, dict):
+                        rm_t = (dt.get("model")
+                                or (dt.get("message") or {}).get("model")
+                                or (dt.get("response") or {}).get("model"))
+                        if isinstance(rm_t, str):
+                            req_model = rm_t[:128]
+                    u = _extract_usage(dt)
+                    if isinstance(u, dict):
+                        usage = _merge_usage(usage, u)
+                        if cap and (prev_in + _input_tokens_of(usage)) > cap:
+                            capped = True
+                        if out_cap and (prev_out + _output_tokens_of(usage)) > out_cap:
+                            capped = True
+                        if usd_cap > 0 and (prev_usd + (_compute_cost_usd(req_model, usage) or 0.0)) > usd_cap:
+                            capped = True
+                except (ValueError, IndexError, AttributeError):
+                    pass
+            if chunked and not capped and not client_gone:
+                try:
+                    self.wfile.write(b"0\r\n\r\n")
+                except OSError:
+                    client_gone = True
+                    self.close_connection = True
+        finally:
+            try:
+                up.close()
+            except Exception:
                 pass
-        if chunked and not capped:
-            self.wfile.write(b"0\r\n\r\n")
-        up.close()
-        cost_usd = _compute_cost_usd(req_model, usage)
-        if isinstance(usage, dict) and cap_scope:
-            self.server.add_totals(cap_scope, _input_tokens_of(usage),
-                                   _output_tokens_of(usage), cost_usd or 0.0)
-        if capped:
-            # a hard abort: the connection ends mid-body, the client's read
-            # fails, and the turn reports failure -- exactly the escalation
-            # the ceiling exists to force
-            self.close_connection = True
-        log_row(path, self.server.log, status=resp.status, out_bytes=sent,
-                usage=usage, capped=True if capped else None, seat=client_seat,
-                attempt=client_attempt, model=req_model or None,
-                cost_usd=cost_usd)
+            cost_usd = _compute_cost_usd(req_model, usage)
+            if isinstance(usage, dict) and cap_scope:
+                self.server.add_totals(cap_scope, _input_tokens_of(usage),
+                                       _output_tokens_of(usage), cost_usd or 0.0)
+            if capped or client_gone:
+                # a hard abort: the connection ends mid-body, the client's read
+                # fails, and the turn reports failure -- exactly the escalation
+                # the ceiling exists to force
+                self.close_connection = True
+            log_row(path, self.server.log, status=resp.status, out_bytes=sent,
+                    usage=usage, capped=True if capped else None,
+                    client_gone=True if client_gone else None,
+                    seat=client_seat, attempt=client_attempt,
+                    model=req_model or None, cost_usd=cost_usd)
 
 
 def _parse_origin_pair(origin_base, credential):
@@ -1006,15 +1064,28 @@ def selftest():
         origin_mp = os.path.join(T, "origin_mp.py")
         with open(origin_mp, "w") as f:
             f.write(
-                "import json\n"
+                "import json, time\n"
                 "from http.server import BaseHTTPRequestHandler, HTTPServer\n"
                 "class H(BaseHTTPRequestHandler):\n"
                 "    protocol_version = 'HTTP/1.1'\n"
                 "    def log_message(self, *a): pass\n"
                 "    def do_POST(self):\n"
                 "        n = int(self.headers.get('Content-Length') or 0)\n"
-                "        self.rfile.read(n)\n"
+                "        raw = self.rfile.read(n)\n"
                 "        auth = self.headers.get('Authorization', '')\n"
+                "        if b'\"stream\": true' in raw or b'\"stream\":true' in raw:\n"
+                "            ev1 = b'data: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-sonnet-4-6\",\"usage\":{\"input_tokens\":300}}}\\n\\n'\n"
+                "            pad = b': ' + (b'x' * 262144) + b'\\n\\n'\n"
+                "            ev2 = b'data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":50}}\\n\\n'\n"
+                "            out = ev1 + pad + ev2\n"
+                "            self.send_response(200)\n"
+                "            self.send_header('Content-Type','text/event-stream')\n"
+                "            self.send_header('Content-Length', str(len(out)))\n"
+                "            self.end_headers()\n"
+                "            self.wfile.write(ev1 + pad); self.wfile.flush()\n"
+                "            time.sleep(0.05)\n"
+                "            self.wfile.write(ev2); self.wfile.flush()\n"
+                "            return\n"
                 "        body = json.dumps({'id':'x','auth':auth,'usage':{'input_tokens':300,'output_tokens':50}}).encode()\n"
                 "        self.send_response(200)\n"
                 "        self.send_header('Content-Type','application/json')\n"
@@ -1108,6 +1179,34 @@ def selftest():
               and r_oai2.status == 429
               and r_zai.status == 200 and d_zai.get("auth") == "Bearer zai-k",
               f"I2 multi-provider routing and cumulative sub-cap multi-call cap: oai={d_oai} r2={r_oai2.status} zai={d_zai}")
+        # I3 (G1) early client disconnect on SSE stream still logs usage + client_gone and charges attempt cap
+        tok_g1 = f"op-seat:writer:g1:{hmac.new(sk.encode(), b'writer:g1', hashlib.sha256).hexdigest()[:16]}"
+        for _ in range(2):
+            cs_g1 = _s.socket(_s.AF_UNIX, _s.SOCK_STREAM)
+            cs_g1.connect(sock_mp2)
+            req_b = json.dumps({"model": "claude-sonnet-4-6", "stream": True}).encode()
+            cs_g1.sendall(
+                b"POST /v1/messages HTTP/1.1\r\nHost: localhost\r\n"
+                + f"x-api-key: {tok_g1}\r\nContent-Type: application/json\r\n"
+                  f"Content-Length: {len(req_b)}\r\n\r\n".encode()
+                + req_b
+            )
+            cs_g1.recv(32)
+            cs_g1.close()
+            time.sleep(0.2)
+        c_g1_3 = UnixMP2()
+        c_g1_3.request("POST", "/v1/messages", body=json.dumps({"model": "claude-sonnet-4-6"}),
+                       headers={"Content-Type": "application/json", "x-api-key": tok_g1})
+        r_g1_3 = c_g1_3.getresponse()
+        r_g1_3.read()
+        rows_g1 = [json.loads(x) for x in open(log_mp2) if json.loads(x).get("attempt") == "g1"]
+        check(len(rows_g1) == 3
+              and rows_g1[0].get("client_gone") is True
+              and (rows_g1[0].get("usage") or {}).get("input_tokens") == 300
+              and (rows_g1[0].get("usage") or {}).get("output_tokens") == 50
+              and (rows_g1[0].get("cost_usd") or 0) > 0
+              and r_g1_3.status == 429,
+              f"I3 early client disconnect still logs usage/cost and enforces attempt cap: rows={rows_g1} r3={r_g1_3.status}")
         p_bmp2.terminate()
         p_omp.terminate()
         p_bmp2.wait(timeout=10)

@@ -752,8 +752,8 @@ NEUTERS = [
     # the broker's turn cap: an early-usage wire is CUT mid-stream at the
     # input ceiling -- hard abort, never a clip; the row records capped
     ("BK-turn-cap", BK,
-     '                                if cap and sum(',
-     '                                if False and sum('),
+     '                                    if cap and sum(',
+     '                                    if False and sum('),
     ("RV-rev-ledger", RV,
      '    try:\n'
      '        import run as _run_mod\n'
@@ -911,8 +911,8 @@ NEUTERS = [
      'log_event(rd, "settle", attempt=aid, seat=seat, task=task,'),
     # the broker's usage parse survives straddled streams
     ("BK-usage-straddle", BK,
-     '                            if isinstance(u, dict):\n                                usage = _merge_usage(usage, u)',
-     '                            if False:\n                                usage = _merge_usage(usage, u)'),
+     '                                if isinstance(u, dict):\n                                    usage = _merge_usage(usage, u)',
+     '                                if False:\n                                    usage = _merge_usage(usage, u)'),
 
     # --- the forger-lens fold: the planter's plant and the forger's find ---
     # the census shim execs under -I (a hostile PYTHONPATH never loads)
@@ -1491,4 +1491,7 @@ NEUTERS = [
     ("RN-operate-cross-refused", RN,
      '                    spawn_mod.Refused, spawn_mod.Void,',
      '                    Refused,'),
+    ("BK-client-gone-log", BK,
+     '                    except OSError:\n                        client_gone = True',
+     '                    except ValueError:\n                        client_gone = True'),
 ]

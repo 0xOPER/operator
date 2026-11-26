@@ -1262,10 +1262,13 @@ def _managed_broker(rd):
     ]
     for pname, po, cvar in prov_pairs:
         b_argv += ["--upstream", f"{pname}={po},env:{cvar}"]
+    err_path = os.path.join(tmp_dir, "broker.err")
+    err_f = open(err_path, "w+", encoding="utf-8")
     proc = subprocess.Popen(
         b_argv,
-        env=benv, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        env=benv, stdout=subprocess.DEVNULL, stderr=err_f,
         stdin=subprocess.DEVNULL, text=True)
+    err_f.close()
     cred_vars = (
         "OPERATOR_BROKER_CREDENTIAL",
         "OPERATOR_ANTHROPIC_CREDENTIAL",
@@ -1279,7 +1282,10 @@ def _managed_broker(rd):
         ready = False
         for _ in range(50):
             if proc.poll() is not None:
-                err = (proc.stderr.read() if proc.stderr else "").strip()[:160]
+                try:
+                    err = open(err_path, encoding="utf-8", errors="replace").read().strip()[:160]
+                except OSError:
+                    err = ""
                 die(f"managed broker exited ({proc.returncode}): {err}", "", 2)
             if os.path.exists(sock):
                 ready = True
@@ -1308,8 +1314,6 @@ def _managed_broker(rd):
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait(timeout=2)
-        if proc.stderr:
-            proc.stderr.close()
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
