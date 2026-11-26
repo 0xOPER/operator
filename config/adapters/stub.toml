@@ -1,0 +1,10 @@
+# The stub adapter: a fixture worker that needs no CLI, no network, no key.
+# Its plan comes from the engine (compiled/plan.json), never from the brief.
+schema = 1
+name = "stub"
+tested_classes = ["write"]
+# C1(e): a fixture adapter holds no CLI session, so there is no tool output
+# to fence -- unfenced, stated
+tool_fencing = "unfenced"
+argv = ["python3", "-I", "/engine/stub-adapter.py", "/w/compiled/plan.json"]
+cost_stream = "jsonl"

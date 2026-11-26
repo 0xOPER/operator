@@ -1,0 +1,34 @@
+name: Bug Report
+description: Report a bug, refusal mismatch, or sandbox issue in OPERATOR.
+title: "[bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug! For security vulnerabilities, please use [Private Vulnerability Reporting](https://github.com/0xOPER/operator/security/advisories/new) instead of opening a public issue.
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Describe the unexpected behavior and what you expected to happen instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Exact commands, minimal `team.toml` / `contract.toml` snippet, or failing selftest command.
+      placeholder: |
+        1. Run `bin/operator.sh ...`
+        2. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Environment (`bin/operator.sh doctor` output)
+      description: OS/kernel version, `bwrap --version`, Python version, and adapter CLI version (if applicable). Please remove any private paths or keys.
+      render: text
+    validations:
+      required: true

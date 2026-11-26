@@ -1,0 +1,20 @@
+# One writer, one reviewer: the smallest honest team. Edit everything.
+schema = 1
+name = "my-team"
+max_parallel = 1
+
+[seat.writer]
+role = "roles/writer.md"
+adapter = "stub"
+write = ["src/**", "tests/**"]
+
+[seat.writer.budget]
+usd = 6.0
+
+[seat.reviewer]
+role = "roles/reviewer.md"
+adapter = "stub"
+write = ["docs/**"]
+
+[seat.reviewer.budget]
+usd = 3.0

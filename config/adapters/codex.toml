@@ -1,0 +1,37 @@
+# codex adapter: the values P measured. Codex 0.166.0 through the engine's
+# broker on the responses wire; config.toml is SKIPPED by --ignore-user-config,
+# so every provider key rides -c overrides (P3/P7).
+schema = 2
+name = "codex"
+version_tested = "0.166.0"
+default_model = "gpt-5-codex"
+tested_classes = ["write"]
+# C1(e): codex has no hook system at the pin -- unfenced, stated; the jail,
+# the seal and the brief's DATA LAW are the controls that hold
+tool_fencing = "unfenced"
+argv = [
+  "codex", "exec", "--skip-git-repo-check",
+  "--ignore-user-config", "--ignore-rules",
+  "--sandbox", "danger-full-access",
+  "-c", "model_provider=operator",
+  "-c", "model={MODEL}",
+  "-c", "model_providers.operator.name=operator",
+  "-c", "model_providers.operator.base_url={BROKER}/v1",
+  "-c", "model_providers.operator.env_key=OPERATOR_KEY",
+  "-c", "model_providers.operator.wire_api=responses",
+  "--json",
+  "{BRIEF}",
+]
+cost_stream = "codex-ndjson"
+session_field = "session_id"          # in the rollout file under CODEX_HOME
+# codex reports NO cost field; the reservation settles in full on null
+cost_field = ""
+# P1/P7 layout facts: CODEX_HOME must EXIST before launch and must NOT sit
+# under /tmp (codex drops helper binaries there); six sqlite stores + wal
+config_dirs = [".codex"]
+must_create = [".codex"]
+nproc_headroom = 7
+credential_env = "OPERATOR_KEY"
+retry_class = "bounded"               # P10: 6 tries then a parseable error
+# the stub upstream must answer response.completed.usage.total_tokens (P7)
+broker_contract = "responses-sse-total-tokens"

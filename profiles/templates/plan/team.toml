@@ -1,0 +1,21 @@
+schema = 1
+name = "plan"
+max_parallel = 1
+
+[seat.planner]
+role = "roles/planner.md"
+adapter = "claude-code"
+write = ["plan.md"]
+
+[seat.planner.budget]
+usd = 6.0
+
+[seat.auditor]
+role = "roles/auditor.md"
+adapter = "claude-code"
+
+[seat.auditor.budget]
+usd = 3.0
+
+[seat.owner]
+human = true

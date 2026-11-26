@@ -1,0 +1,21 @@
+schema = 1
+name = "research"
+max_parallel = 1
+
+[seat.researcher]
+role = "roles/researcher.md"
+adapter = "claude-code"
+write = ["reports/**"]
+
+[seat.researcher.budget]
+usd = 6.0
+
+[seat.reviewer]
+role = "roles/reviewer.md"
+adapter = "claude-code"
+
+[seat.reviewer.budget]
+usd = 3.0
+
+[seat.owner]
+human = true

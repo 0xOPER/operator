@@ -1,0 +1,42 @@
+# opencode adapter: the values P measured, the wire re-ruled 2026-11-18. OpenCode 1.19.5; config
+# is read from the PROJECT dir only (never $HOME), so the engine plants the
+# repo's opencode.json itself with the broker address baked in.
+schema = 2
+name = "opencode"
+version_tested = "1.19.5"
+default_model = "claude-sonnet-4-6"
+tested_classes = ["write"]
+# C1(e): hook factories never fire in `run --pure` at the 1.19.5 pin
+# (probed 2026-11-19, three entry shapes) -- unfenced, stated; the v2
+# revisit is the plugin line
+tool_fencing = "unfenced"
+argv = [
+  "opencode", "run", "--pure", "--format", "json",
+  "{BRIEF}",
+]
+# the engine plants this config in the repo root before the run (P1/P3):
+# provider options carry the broker URL; the key rides env into the broker.
+# {MODEL} resolves from [seat.<name>].model in team.toml (or default_model).
+repo_config = "opencode.json"
+repo_config_body = '''
+{ "model": "operator/{MODEL}",
+  "provider": { "operator": {
+      "npm": "@ai-sdk/anthropic",
+      "options": { "baseURL": "{BROKER_V1}" },
+      "models": { "{MODEL}": { "name": "{MODEL}" } } } } }
+'''
+# the anthropic sdk demands ITS env name (the live probe's own error); the
+# dummy rides it, the broker strips and injects the opencode-go key
+credential_env = "ANTHROPIC_API_KEY"
+cost_stream = "opencode-json"
+session_field = "sessionID"           # only in the event stream, never a file
+cost_field = "cost"
+nproc_headroom = 8
+# at startup it pings its own site and the npm registry; under the jail's
+# no-route those are refused and NON-FATAL once the provider is wired (P1)
+retry_class = "bounded"
+# instructions channel: config `instructions` must be an ARRAY (P15)
+instructions_shape = "array"
+# the report channel as ONE FILE inside the CLI's writable world (the
+# project root), the door claude and zcode use
+report_mount = "/w/repo/report-out.json"

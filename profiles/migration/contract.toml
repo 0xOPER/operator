@@ -1,0 +1,74 @@
+# The migration template, re-authored from the hardened dep-migrate table for one repo.
+# A program copies this to its own directory, points the rows at the repo's real checks,
+# and the seats come from its team. Rows with the same seat, stage and deps form one task.
+schema = 2
+
+[setup]
+cmd = "python3 -m venv /env && /env/bin/pip install -r requirements.lock"
+inputs = ["requirements.lock"]
+network = ["pypi.org", "files.pythonhosted.org"]
+
+[[row]]
+id = "deps.audit"
+stage = "design"
+desc = "The locked dependency set and the target set are listed with their differences, and each difference is wanted or deferred in writing"
+kind = "run"
+seat = "researcher"
+reviewer = "reviewer"
+cmd = "python3 -I $PROG/tools/dep-audit.py lock target --diff"
+oracle = ["tools"]
+control = "deps.audit.control"
+
+[[row]]
+id = "deps.audit.control"
+stage = "design"
+desc = "the control twin: the auditor's own lock set passes the same differ (a dead control proves nothing)"
+kind = "run"
+seat = "researcher"
+reviewer = "reviewer"
+cmd = "python3 -I $PROG/tools/dep-audit.py lock lock --diff"
+oracle = ["tools"]
+
+[[row]]
+id = "apply.update"
+stage = "build"
+desc = "The wanted updates are applied and the lock file reflects exactly them"
+kind = "run"
+seat = "implementer"
+reviewer = "reviewer"
+deps = ["deps.audit"]
+cmd = "python3 -I $PROG/tools/dep-apply.py --dry-run=no"
+oracle = ["tools"]
+control = "apply.update.control"
+
+[[row]]
+id = "apply.update.control"
+stage = "build"
+desc = "the control twin: the dry-run path refuses on the unapplied tree"
+kind = "run"
+seat = "implementer"
+reviewer = "reviewer"
+deps = ["deps.audit"]
+cmd = "python3 -I $PROG/tools/dep-apply.py --dry-run=only --fail"
+oracle = ["tools"]
+
+[[row]]
+id = "tests.pass"
+stage = "build"
+desc = "The repository's own test suite passes on the updated tree"
+kind = "run"
+seat = "implementer"
+reviewer = "reviewer"
+deps = ["apply.update"]
+cmd = "/env/bin/python -m pytest -q"
+oracle = ["tests"]
+timeout = 900
+
+[[row]]
+id = "ship.signoff"
+stage = "ship"
+desc = "The owner signs the migration off"
+kind = "ruling"
+seat = "owner"
+reviewer = "owner-deputy"
+deps = ["deps.audit", "apply.update", "tests.pass"]

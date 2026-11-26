@@ -1,0 +1,147 @@
+name: ci
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+env:
+  LC_ALL: C
+
+jobs:
+  battery:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install bubblewrap and pytest
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap python3-pytest
+      - name: Clean-clone battery
+        run: |
+          git clone --quiet . "$RUNNER_TEMP/clone"
+          cd "$RUNNER_TEMP/clone"
+          test/cleanroom.sh scripts/run-all-selftests.sh
+          test/cleanroom.sh test/panel-check.sh
+          test/cleanroom.sh test/plan-template-check.sh
+          test/cleanroom.sh test/citation-seal-check.sh
+      - name: Neuter ratchet
+        run: cd "$RUNNER_TEMP/clone" && test/cleanroom.sh test/neuter.py
+      - name: Gate selftests
+        run: |
+          cd "$RUNNER_TEMP/clone"
+          test/cleanroom.sh test/wave-job.sh --selftest
+          test/cleanroom.sh scripts/run-all-selftests.sh --selftest
+          if [ -f keep-list.private ]; then
+            test/cleanroom.sh test/closure-check.sh --selftest
+            test/cleanroom.sh test/closure-check.sh R2
+            test/cleanroom.sh test/closure-check.sh R1
+          fi
+      - name: First-level selftests, hollow-battery, and sealed probes (outside the room)
+        run: |
+          cd "$RUNNER_TEMP/clone"
+          scripts/run-first-level-selftests.sh
+          test/hollow-battery-check.sh
+          test/sealed-probe-check.sh
+          python3 -I test/forge/sealed.py all
+      - name: The room hides home and the network and keeps the tree read-only
+        run: |
+          cd "$RUNNER_TEMP/clone"
+          test/cleanroom.sh sh -c '[ "$(grep -c : /proc/net/dev)" = 1 ] && ! touch /work/operator/.w 2>/dev/null && echo inside' | grep -q inside
+          [ "$(grep -c : /proc/net/dev)" -gt 1 ]
+          h=$HOME
+          test/cleanroom.sh sh -c "test ! -e \"$h\" && echo inside" | grep -q inside
+          test -e "$h"
+
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Release lint, tier A
+        run: scripts/release-lint.py
+      - name: Release lint selftest
+        run: scripts/release-lint.py --selftest
+      - name: No unlisted file, no link
+        run: |
+          set -o pipefail
+          lists=(keep-list)
+          [ -f keep-list.private ] && lists+=(keep-list.private)
+          diff <(git ls-files | sort) <(cat "${lists[@]}" | sort)
+          [ -z "$(git ls-files -s | awk '$1==120000')" ]
+      - name: No tool attribution in commit messages
+        run: "! git log --format=%B | grep -iE '^\\s*co-authored-by:|^\\s*[a-z-]+-by:.*claude|(made|generated) (with|by) \\[?claude|noreply@anthropic\\.com'"
+      - name: History, identity and tag text, tier A
+        if: github.event_name == 'push'  # a pull request's merge ref has GitHub as committer
+        run: |
+          id='OPERATOR project <351411109+0xOPER@users.noreply.github.com>'
+          [ "$(git log --all --format='%an <%ae>%n%cn <%ce>' | sort -u)" = "$id" ]
+          tags=$(git cat-file --batch-all-objects --batch-check='%(objecttype) %(objectname)' | awk '$1=="tag"{print $2}' | git cat-file --batch)
+          [ -z "$(printf '%s\n' "$tags" | grep -a '^tagger ' | sed -E 's/^tagger //; s/ [0-9]+ [-+][0-9]{4}$//' | grep -vxF "$id")" ]
+          [ -z "$(printf '%s\n' "$tags" | grep -aE '^-----BEGIN ')" ]
+          [ -z "$(git rev-list --all | git cat-file --batch | grep -aE '^(gpgsig|mergetag)')" ]
+          t=$(mktemp -d)
+          rev_args=(--all)
+          [ -f keep-list.private ] && rev_args=(-1 HEAD)
+          git log "${rev_args[@]}" --format='%an <%ae>%n%cn <%ce>%n%B' > "$t/commits.txt"
+          git for-each-ref --format='%(refname)%0a%(taggername) %(taggeremail)%0a%(contents)' >> "$t/commits.txt"
+          ex=(':!test/lint/tier-a.tsv')
+          if [ -f keep-list.private ]; then while IFS= read -r f; do ex+=(":!$f"); done < keep-list.private; fi
+          git log "${rev_args[@]}" -p --format= -- . "${ex[@]}" > "$t/patches.txt"
+          scripts/release-lint.py --root "$t"
+      - name: Shellcheck and ruff ratchets
+        run: test/ratchet.sh
+
+  scanners:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Install scanners at pinned hashes
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -fsSLO https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  gitleaks_8.30.1_linux_x64.tar.gz" | sha256sum -c -
+          curl -fsSLO https://github.com/trufflesecurity/trufflehog/releases/download/v3.99.3/trufflehog_3.99.3_linux_amd64.tar.gz
+          echo "029b182e0ed35fd5b02cd1eadc2a94bd457ab14ad22a9380b6e5d9652261d28d  trufflehog_3.99.3_linux_amd64.tar.gz" | sha256sum -c -
+          tar -xzf gitleaks_8.30.1_linux_x64.tar.gz gitleaks
+          tar -xzf trufflehog_3.99.3_linux_amd64.tar.gz trufflehog
+      - name: Each scanner must flag a canary before its clean result counts
+        run: test/scanner-canary.sh "$RUNNER_TEMP/gitleaks" "$RUNNER_TEMP/trufflehog"
+      - name: Scan the tree and its history
+        run: |
+          "$RUNNER_TEMP/gitleaks" git --no-banner --redact --ignore-gitleaks-allow .
+          "$RUNNER_TEMP/trufflehog" git "file://$PWD" --no-verification --fail --no-update
+      - name: Workflow audit
+        run: pipx run zizmor==1.16.3 --offline .github/workflows
+
+  conformance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install bubblewrap and pinned CLIs
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap
+          sudo npm install -g --no-fund --no-audit @anthropic-ai/claude-code@2.1.318 @openai/codex@0.166.0 opencode-ai@1.19.5
+      - name: Conformance cells (the pins)
+        run: |
+          export OPERATOR_CLI_DIR="$(npm prefix -g)"
+          test/conformance.sh --selftest
+          test/conformance.sh --matrix
+          test/conformance.sh claude-code write-outside another-seat push-bare net-denied
+          test/conformance.sh codex write-outside another-seat push-bare net-denied
+          test/conformance.sh opencode write-outside another-seat push-bare net-denied

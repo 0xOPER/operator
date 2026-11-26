@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# approvals -- the owner's door on rulings. `approve` closes the program as it stands
+# and records a signed ruling; `show` lists what exists. The signing itself is
+# ruling.py's; this is the operator.sh spelling.
+# usage: approvals approve <program-dir> [--kind arm|row] [--row <id>] [--key <keyfile>]
+#        approvals show <program-dir> [ruling-file]
+#        approvals --selftest
+# exit: the ruling tool's own codes
+set -uo pipefail
+HERE=$(cd -- "$(dirname -- "$(readlink -f -- "$0")")" && pwd)
+case "${1:-}" in
+  approve) shift; exec "$HERE/ruling.py" sign "$@" ;;
+  show) shift; exec "$HERE/ruling.py" show "$@" ;;
+  --selftest)
+    rc=0
+    "$0" >/dev/null 2>&1; [ $? = 2 ] || { echo "A: no args isn't usage"; rc=1; }
+    out=$("$0" show "$(mktemp -d)" 2>&1); [ $? = 2 ] && printf '%s' "$out" | grep -q "no rulings" \
+      || { echo "B: show on an empty program isn't VOID"; rc=1; }
+    [ "$rc" = 0 ] && echo "selftest: OK (usage, empty show)" || echo "selftest: FAIL"
+    exit $rc ;;
+  *) sed -n '2,/^set -/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+esac

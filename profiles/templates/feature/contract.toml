@@ -1,0 +1,24 @@
+# One row per task: the check command decides green, never the report.
+schema = 2
+
+[[row]]
+id = "impl"
+stage = "build"
+desc = "implement the feature and unit tests described in the brief"
+kind = "run"
+seat = "writer"
+reviewer = "reviewer"
+cmd = "env PYTHONPATH=. python3 -B -m unittest discover -s tests -v"
+expect_base_fail = true
+test_paths = ["tests"]
+
+[[row]]
+id = "docs"
+stage = "build"
+desc = "document the feature under docs/"
+kind = "run"
+seat = "reviewer"
+reviewer = "writer"
+deps = ["impl"]
+cmd = "grep -q '^# ..*' docs/feature.md"
+expect_base_fail = true

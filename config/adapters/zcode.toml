@@ -1,0 +1,116 @@
+# zcode adapter: the ZCode CLI headless (the desktop bundle's CLI, 0.17.1
+# at app 3.18.2), probed 2026-11-18. The owner's ruling: the op seat rides
+# ZCode for Coding-Plan economics instead of per-token API spend.
+# Shape (all probe-proven): -p runs one prompt headless with file writes
+# under --mode yolo; --json prints ONE result envelope (camelCase usage,
+# no cost field); ANTHROPIC_* env is IGNORED and the OAuth store is
+# keyring-bound, but a provider-registry file (strict schema) whose
+# instance carries api.baseUrl + access.apiKey plaintext on the
+# anthropic-messages wire drives it fully (chain-proven against a live
+# mock: the x-api-key and the /v1/messages path arrived verbatim).
+# The engine renders that registry per attempt into the worker's HOME
+# (the CLI never loads it from a read-only path) -- the dummy key rides
+# the file, the broker strips it and injects the real one, so no
+# credential lands anywhere the worker can seal. The registry pins the
+# model too (defaultModelSelection) -- headless has NO --model flag, and
+# the template's own model ids are the only ones that resolve (the zai
+# template is the anthropic-messages wire with builtin GLM ids).
+schema = 2
+name = "zcode"
+version_tested = "0.17.1"
+default_model = "GLM-5.3-Flash"
+tested_classes = ["write"]
+argv = [
+  "zcode", "-p",
+  "{BRIEF}",
+  "--cwd", "/w/repo",
+  "--json",
+  "--mode", "yolo",
+]
+# the provider registry rides the worker's HOME (probed in-jail: the same
+# bytes in the CLI's own home config tree turn green; behind an env
+# pointer at the read-only compiled/ the CLI dies modelless). The strict
+# schema needs modelConfigRules present. The client adds /v1 itself, so
+# baseUrl is the bare broker face. The dummy apiKey is public by design:
+# the broker strips it and holds the real one, and the jail's only
+# network face IS the broker. {ZDIR} expands to the CLI's home config
+# root (the export lint bans its literal); see the [home_files] table at
+# the file's foot (a multi-line body can't ride an inline table)
+# the hooks' tracked source binds ro under /engine (the stub stays: the
+# worker -- seam needs it)
+engine_bins = ["bin/lib/stub-adapter.py", "bin/audit-hook.py",
+               "bin/tool-fence-hook.py"]
+# C1(e): stated hooked -- the [home_files] config plants the fence hook,
+# the placement test proves it fires in the real jail
+tool_fencing = "hooked"
+# the loader demands its credential STORE exist (the empty {}) before the
+# registry applies at all, and with no Secret Service in the jail the
+# store's encryptor needs its secret -- the env VALUE form (never both
+# sources at once, the CLI's own law). It guards nothing real: the store
+# holds {} and the dummy; the REAL credential is in the broker
+static_env = { ZCODE_CREDENTIAL_SECRET = "operator-store-secret-v1-3k9f2m7qx" }
+# the CLI writes its state under its home config tree ({ZDIR}/cli: logs,
+# db, rollout) -- the attempt home ships empty and the tree self-creates
+# (config_dirs stays unset: the engine reads it nowhere, and the census
+# rides the home_files laws above)
+# no cost field in the envelope: the reservation settles in full on null
+# (codex precedent); the camelCase usage feeds the context budget
+cost_stream = "zcode-json"
+session_field = "sessionId"
+cost_field = ""
+# probe: a failing endpoint retried with exponential backoff until the
+# turn died loud (rc 1) -- the wall bounds it, never a fake success
+retry_class = "wall-bound"
+# node runtime: V8 threads + libuv pool beyond the CLI's own processes
+nproc_headroom = 6
+# the report channel as ONE FILE inside the CLI's writable world (the
+# --cwd root), same door claude uses
+report_mount = "/w/repo/report-out.json"
+
+# C1(b): the CLI's hook channel is config-file hooks ({ZDIR}/cli/config.json,
+# enabled: true demanded) -- the fence hook rides PostToolUse and its
+# additionalContext joins the context adjacent to every tool result
+# (placement proven live by test/fence-placement.sh). The audit channel rides
+# the same config (PreToolUse); zcode turns were auditless in v1
+[home_files]
+"{ZDIR}/v2/provider_config.json" = '''
+{
+ "schemaVersion": 1,
+ "config": {
+  "providerOrder": ["operator"],
+  "defaultModelSelection": {"providerId": "operator", "modelId": "{MODEL}"},
+  "providerConfigRules": {
+   "providerRules": [
+    {
+     "providerId": "operator",
+     "templateId": "zai-api",
+     "providerName": "Operator Broker",
+     "config": {
+      "group": "standard-personal",
+      "access": {"type": "api-key", "apiKey": "{SEAT_TOKEN}"},
+      "api": {"type": "anthropic-messages", "baseUrl": "{BROKER}"},
+      "personalModelIds": ["{MODEL}"],
+      "modelOrder": ["{MODEL}"]
+     }
+    }
+   ]
+  },
+  "modelConfigRules": {
+   "providerModelRules": [],
+   "manualProviderModelRules": []
+  }
+ }
+}
+'''
+"{ZDIR}/v2/credentials.json" = "{}"
+"{ZDIR}/cli/config.json" = '''
+{
+ "hooks": {
+  "enabled": true,
+  "events": {
+   "PreToolUse": [ { "hooks": [ { "type": "command", "command": "python3 -I /engine/audit-hook.py" } ] } ],
+   "PostToolUse": [ { "hooks": [ { "type": "command", "command": "python3 -I /engine/tool-fence-hook.py" } ] } ]
+  }
+ }
+}
+'''

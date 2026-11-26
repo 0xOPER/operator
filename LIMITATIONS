@@ -1,0 +1,57 @@
+# LIMITATIONS
+
+What 0.1 does not claim, stated plainly.
+
+## Sealed evidence and checkout visibility
+
+- **In-repo `oracle` paths are tamper-sealed, not secret; secret vectors belong in `$PROG` (`ro`)**:
+  Each worker attempt receives a fresh 1-commit rootless worktree with repo-carried
+  instruction files (`CLAUDE.md`, `AGENTS.md`, `.github`, etc.) stripped unless
+  granted via `see`/`write` or `repo_context = "load"`, while ordinary tracked repo
+  files (including in-repo `oracle = ["tests"]`) remain present at base state in
+  `/w/repo`. At check time, `contract.py` exports `CONTRACT_PIN` first, applies
+  grant-scoped candidate diffs outside `oracle`, mounts pinned `oracle` dirs/files
+  and runner configs read-only, and wraps `pytest` checks with `pytest-guard.py`
+  (CPython audit hooks + HMAC session receipts). If test vectors themselves must
+  remain hidden from worker reads during authoring, store them under the program
+  directory (`ro = ["vectors"]`), never inside the git repository.
+- **A candidate TOLD the hidden vectors can pass**: sealed oracles pin the
+  checks, but a worker that knows the vectors writes to them and the row
+  greens. The seal bounds what the AUTHOR can tamper with, not what they may
+  KNOW; use blind cross-family review or human-only rows for hardcoding checks.
+- **Candidate code can DETECT it is under test** (jail shapes, timing, the
+  overlay's mounts). In-jail `PreToolUse` hook logs (`hook.jsonl`) run under
+  the worker's UID inside the jail and are diagnostic telemetry, whereas hard
+  enforcement lives host-side in `broker.py`, `seal()`, `_import_gate()`, and
+  `contract.py`.
+
+## Inter-system (the wire)
+
+- No live channels at 0.1: a remote message queues, verifies, and lands in
+  the NEXT brief. No presence, no streaming — deliberate.
+- A known peer's key is the whole trust for a message's `from`; a
+  compromised peer key signs as that peer.
+
+## Memory and skills
+
+- The store is scoped by program, not by run: a team note lives until
+  superseded, across every run of its program.
+- `--by` attribution is free text (local-first, unauthenticated).
+
+## Platform and orchestration
+
+- **Serialized loop at 0.1**: `run.py tick` / `run.py loop` executes ready
+  tasks sequentially (`concurrency = 1`) under a single run lock; parallel
+  multi-worker dispatch is deferred past 0.1.
+- **Shared-kernel Linux `bwrap` (and VM-backed Docker on macOS)**: Native runs
+  require Linux `bubblewrap` (for strict RAM/PID/CPU isolation on shared hosts,
+  wrap runs in `systemd-run --user --scope -p MemoryMax=...`). On macOS,
+  `scripts/docker-operator.sh` runs inside a Linux hypervisor VM; on native
+  Linux hosts, use `./bin/operator.sh` directly rather than the unconfined
+  nested-bwrap container wrapper.
+- **Single-UID host filesystem & local hash chain**: A same-UID process outside
+  the jail can rewrite local files (`call-log.tsv`, `reviews/`, rulings). The
+  call log's SHA-256 chain (or optional `CALL_LOG_TOKEN` HMAC) detects
+  accidental corruption/truncation, and `scripts/verify-rekor.py` verifies
+  out-of-band Sigstore Rekor registrations of `CLAIMS.md`, but runtime ticks do
+  not push live `in-toto`/Rekor attestations and the host OS account is trusted.

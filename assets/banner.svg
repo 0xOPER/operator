@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 380" width="1200" height="380" role="img" aria-label="OPERATOR — Safe Overnight Autonomy for Coding Agents">
+  <defs>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M 32 0 L 0 0 0 32" fill="none" stroke="#1b222a" stroke-width="1"/>
+    </pattern>
+    <radialGradient id="glow" cx="50%" cy="48%" r="58%">
+      <stop offset="0%" stop-color="#172028" stop-opacity="0.9"/>
+      <stop offset="100%" stop-color="#101418" stop-opacity="1"/>
+    </radialGradient>
+    <linearGradient id="amberPill" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#e5a00d" stop-opacity="0.16"/>
+      <stop offset="50%" stop-color="#e5a00d" stop-opacity="0.06"/>
+      <stop offset="100%" stop-color="#151b22" stop-opacity="0.8"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Canvas & subtle architectural grid -->
+  <rect width="1200" height="380" rx="14" fill="url(#glow)"/>
+  <rect width="1200" height="380" rx="14" fill="url(#grid)" opacity="0.85"/>
+  <rect x="1" y="1" width="1198" height="378" rx="13" fill="none" stroke="#232b33" stroke-width="1.5"/>
+
+  <!-- Framed OP Emblem -->
+  <g transform="translate(152, 86)">
+    <rect width="208" height="208" rx="10" fill="#101418" stroke="#2c3640" stroke-width="2"/>
+    <g transform="translate(-24, -24)">
+      <path d="M126 84 H158 L184 110 V130 L158 156 H140 V174 H126 Z M142 102 V138 H152 L166 124 V116 L152 102 Z" fill="#4cc38a" fill-rule="evenodd"/>
+      <circle cx="182" cy="120" r="13" fill="#101418"/>
+      <circle cx="182" cy="120" r="7.5" fill="#4cc38a"/>
+      <path d="M88 76 H134 L154 96 V136 H138 V103 L127 92 H95 L84 103 V153 L95 164 H127 L138 153 V146 H154 V160 L134 180 H88 L68 160 V96 Z" fill="#d7dee6"/>
+    </g>
+  </g>
+
+  <!-- Wordmark -->
+  <text x="404" y="164" fill="#d7dee6" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, 'Liberation Mono', monospace" font-size="78" font-weight="800" letter-spacing="10">OPERATOR</text>
+
+  <!-- Tagline -->
+  <text x="408" y="210" fill="#8b98a5" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="25" font-weight="500" letter-spacing="0.4">Safe Overnight Autonomy for Coding Agents</text>
+
+  <!-- 3-Stage Pipeline Pills: Sign -> Jail & Verify -> Promote -->
+  <g transform="translate(408, 240)" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="17" font-weight="500">
+    <!-- Pill 1: Sign -->
+    <rect x="0" y="0" width="122" height="40" rx="20" fill="#131920" stroke="#2c3640" stroke-width="1.5"/>
+    <circle cx="24" cy="20" r="5.5" fill="#4cc38a"/>
+    <text x="40" y="26" fill="#d7dee6">Sign</text>
+
+    <!-- Arrow 1 -->
+    <line x1="128" y1="20" x2="170" y2="20" stroke="#485665" stroke-width="1.5"/>
+    <path d="M164 15 L172 20 L164 25" fill="none" stroke="#485665" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <!-- Pill 2: Jail & Verify -->
+    <rect x="178" y="0" width="206" height="40" rx="20" fill="url(#amberPill)" stroke="#9e7114" stroke-width="1.5"/>
+    <!-- Minimal Lock Icon -->
+    <g transform="translate(198, 11)" fill="none" stroke="#e5a00d" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="1" y="7" width="12" height="9" rx="2" fill="#e5a00d" fill-opacity="0.22"/>
+      <path d="M4 7 V4.5 A3 3 0 0 1 10 4.5 V7"/>
+    </g>
+    <text x="223" y="26" fill="#eef2f6">Jail &amp; Verify</text>
+
+    <!-- Arrow 2 -->
+    <line x1="390" y1="20" x2="432" y2="20" stroke="#485665" stroke-width="1.5"/>
+    <path d="M426 15 L434 20 L426 25" fill="none" stroke="#485665" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <!-- Pill 3: Promote -->
+    <rect x="440" y="0" width="154" height="40" rx="20" fill="#131920" stroke="#2c3640" stroke-width="1.5"/>
+    <circle cx="464" cy="20" r="5.5" fill="#4cc38a"/>
+    <text x="480" y="26" fill="#d7dee6">Promote</text>
+  </g>
+</svg>

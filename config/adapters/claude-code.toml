@@ -1,0 +1,65 @@
+# claude-code adapter: the values P measured (real-cli-probes.md, pass two).
+# Claude Code 2.1.318 through the engine's broker, headless -p, streaming SSE.
+schema = 2
+name = "claude-code"
+version_tested = "2.1.318"
+default_model = "claude-sonnet-4-6"
+# every grant class the conformance cells proved for this adapter (C9 fills
+# the final list; these are P's direct observations)
+tested_classes = ["write"]
+# the worker argv: {BRIEF} is the fenced brief the engine composed; {MODEL}
+# resolves from [seat.<name>].model in team.toml (or default_model above).
+# NO --permission-mode: acceptEdits auto-approves every edit in the project
+# dir (the allow list only widens it); default mode + the allow rules denies
+# every unlisted write headless -- the conformance cells proved both ways
+argv = [
+  "claude", "-p",
+  "--setting-sources", "project",
+  "--strict-mcp-config", "--mcp-config", "{\"mcpServers\":{}}",
+  "--model", "{MODEL}",
+  "--settings", "/w/compiled/adapter-settings.json",
+  "--output-format", "json",
+  "{BRIEF}",
+]
+# the engine renders compiled/adapter-settings.json per attempt: the audit
+# hook (fires per tool attempt, P4; fail-open shapes are why the census probes
+# it alive), sandbox failIfUnavailable, and the seat's grants compiled to
+# claude permission rules (P5/P14)
+settings_template = "claude-code"
+# the hooks' tracked source binds ro under /engine next to the stub
+# (audit-hook on PreToolUse; tool-fence-hook on PostToolUse -- C1(b): its
+# line joins the context adjacent to every tool result; placement proven
+# live by test/fence-placement.sh)
+engine_bins = ["bin/lib/stub-adapter.py", "bin/audit-hook.py",
+               "bin/tool-fence-hook.py"]
+# C1(e): the PostToolUse fence hook is planted by the settings render --
+# stated hooked, proven by the placement test
+tool_fencing = "hooked"
+# cost/session from the CLI's own json envelope (estimate only; costBasis
+# unknown on a plan -- run.py settles parsed cost or in full on null)
+cost_stream = "claude-json"
+session_field = "session_id"
+cost_field = "total_cost_usd"
+# process headroom P1 measured (own processes, excluding the adapter's)
+nproc_headroom = 4
+# home shape: claude writes only inside its home's .claude dir and
+# .claude.json file. The attempt home ships EMPTY (P11: any instructions
+# file present crosses the wire to the endpoint).
+config_dirs = [".claude"]
+# the credential: brokered key only, env, never on disk (P3)
+credential_env = "ANTHROPIC_AUTH_TOKEN"
+# the broker's address rides the base URL -- claude appends /v1 itself
+broker_env = { ANTHROPIC_BASE_URL = "{BROKER}" }
+# retry class P10: claude retries to the wall; the supervisor timeout binds
+retry_class = "wall-bound"
+
+# a review turn adds these to the session (the channel lives outside the repo)
+review_dirs = ["/w/out", "/w/compiled"]
+
+# a review turn runs acceptEdits: allowance rules never admit Writes headless
+# (probed every spelling), and the reviewer holds nothing -- its repo is never
+# sealed or promoted, the jail bounds its writes, only report.json crosses
+review_permission_mode = "acceptEdits"
+
+# the report channel as ONE FILE inside the CLI writable world (the git root)
+report_mount = "/w/repo/report-out.json"

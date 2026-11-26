@@ -1,0 +1,35 @@
+# The research template: an open-web report whose every quote is checkable
+# against a saved copy of its source. The citation law:
+#   [setup] fetches each cited URL into /env/sources (network, once);
+#   the citation row then verifies OFFLINE that every quote in the report
+#   appears in its saved source -- a fabricated URL or a fabricated quote
+#   leaves the row red, and the matrix records the row author-reachable.
+# A program copies this template, points brief/report at its own task, and
+# the seats come from its team.
+schema = 2
+
+[setup]
+cmd = "python3 -I $PROG/checks/fetch_sources.py reports/report.md /env/sources"
+inputs = ["checks/fetch_sources.py", "reports/report.md"]
+network = ["*"]
+
+[[row]]
+id = "report.write"
+stage = "research"
+desc = "the report exists under reports/, each claim carries a [n] citation whose URL is listed at the end, and every quote is verbatim"
+kind = "run"
+seat = "researcher"
+reviewer = "reviewer"
+cmd = "python3 -I checks/citations.py --structure-only reports/report.md"
+oracle = ["checks"]
+
+[[row]]
+id = "citations.check"
+stage = "research"
+desc = "every cited quote appears verbatim in its saved source; no source, no green"
+kind = "run"
+seat = "researcher"
+reviewer = "reviewer"
+deps = ["report.write"]
+cmd = "python3 -I $PROG/checks/citations.py reports/report.md /env/sources"
+oracle = ["checks"]

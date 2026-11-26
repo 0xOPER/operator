@@ -1,0 +1,12 @@
+# paths -- where OPERATOR keeps its state, in one place. Source this file.
+#   OPERATOR_HOME        state root. Default: $XDG_STATE_HOME/operator, else ~/.local/state/operator
+#   OPERATOR_WORKSPACES  colon-separated program roots. Default: $OPERATOR_HOME/workspaces
+# With no HOME the default is a path that can't be written, so a write fails instead of landing somewhere odd.
+# A relative XDG_STATE_HOME is ignored, as the spec says.
+case "${XDG_STATE_HOME:-}" in
+  /*) _state=$XDG_STATE_HOME ;;
+  *) _state=${HOME:-/nonexistent}/.local/state ;;
+esac
+OPERATOR_HOME=${OPERATOR_HOME:-$_state/operator}
+OPERATOR_WORKSPACES=${OPERATOR_WORKSPACES:-$OPERATOR_HOME/workspaces}
+export OPERATOR_HOME OPERATOR_WORKSPACES
