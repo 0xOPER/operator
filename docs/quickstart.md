@@ -28,9 +28,7 @@ something refuses, the refusal names its fix -- read the second line.
 bin/operator.sh demo run
 ```
 
-Two stub seats go from reserve to promoted, a forged claim refuses, an outside
-write refuses, and the network fence proves itself. This is the whole loop
-with no credentials and no risk.
+Two stub seats promote candidate work through sealed checks, an outside write fails to land while an allowed write lands, and the egress fence proves itself against a local listener. It prints a one-line summary and cleans up its temporary directory (no credentials, no risk). For the full live-jail tick, reservation, and review ladder, run `scripts/run-first-level-selftests.sh`.
 
 ## 2. The front door
 
@@ -120,11 +118,7 @@ bin/operator.sh demo run --keep demo-keep
 OPERATOR_HOME=demo-keep/home bin/operator.sh panel render --run demo-run
 ```
 
-The demo walks the whole engine on stub seats -- two go from reserve to
-promoted, a forged claim refuses, an outside write refuses -- and `--keep`
-preserves its run dir so everything you just learned (`status --json`,
-`approvals`, the panel) reads it back. Each attempt was budgeted, jailed,
-sealed, gated and reviewed before anything promoted.
+The demo exercises stub seats, sealed contract checks, and the network fence, and `--keep` preserves its run directory so `status --json`, `approvals`, and `panel render` can read it back (`demo run` itself deletes its temp directory unless `--keep` is passed).
 
 Watch your own run live:
 

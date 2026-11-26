@@ -18,8 +18,9 @@ OPERATOR is a **verifiable AI control plane** for autonomous multi-agent executi
 │  2. AUTONOMOUS EXECUTIVE (Jailed AI Seats inside bwrap)                    │
 │     • Worker seats  [seat.<w>]  — write-scoped clones, budget-aware briefs │
 │     • Reviewer seat [seat.<r>]  — independent adapter verdict over pack    │
-│     • Operator seat [seat.op]   — autonomous escalation triage (whitelisted│
-│                                   verbs only; no shell, no rule edits)     │
+│     • Operator seat [seat.op]   — autonomous escalation triage (bounded    │
+│                                   effect: 5 whitelisted verbs, no repo     │
+│                                   writes, attempts never sealed/promoted)  │
 └─────────────────────────────────────┬──────────────────────────────────────┘
                                       │ sealed bundles, reports, directives
                                       ▼
@@ -98,7 +99,7 @@ reserve -> build_attempt -> compose_brief (nonce fence + budget)
 
 Every guarantee above is bounded by the explicit threat model in `LIMITATIONS`:
 
-- **Single-UID host trust**: A process running unsandboxed as the same host user as the engine can rewrite engine files. The hash chain detects tampering after the fact; host isolation is the OS boundary.
+- **Single-UID host trust**: A process running unsandboxed as the same host user as the engine can rewrite engine files. The hash chain detects mid-file edits after the fact, but cannot detect rows cut off the end (tail truncation) without an external anchor; host isolation is the OS boundary.
 - **Sealed evidence vs. leakage**: Sealed oracles prevent a worker from modifying or faking test suites, not from solving tests whose contents were already disclosed to it.
 - **Prompt injection**: Nonce fences (`bin/compose-fence.py`) and tool hooks (`bin/tool-fence-hook.py`) separate data from instructions at the prompt layer, while deterministic host gates (grants, broker, import gate, contract jails, op capability guards) enforce containment even when a model follows hostile text.
 - **Platform**: Linux with working `bubblewrap` and unprivileged user namespaces.

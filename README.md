@@ -17,6 +17,10 @@
 </p>
 
 <p align="center">
+  A Linux CLI harness (Python 3.11+ and bash) that runs Claude Code, Codex, OpenCode, and ZCode unattended inside <code>bubblewrap</code> jails (macOS via Docker).
+</p>
+
+<p align="center">
   <a href="#watch-the-overview">Video Overview</a> ·
   <a href="#try-it-in-60-seconds">Try It in 60 Seconds</a> ·
   <a href="#why-not-just-use-another-agent-orchestrator">Why Not Other Orchestrators?</a> ·
@@ -47,7 +51,7 @@ Right now, "autonomous coding" is mostly an illusion. Either you keep permission
 Every builder who has tried leaving coding agents running unattended hits the same two walls:
 
 1. **Compounding Fake Progress**
-   On a 1-step demo, a 10% chance of an agent faking a test pass is annoying. On a 10-step task chain, a single fake green at Step 2 silently poisons Steps 3 through 10. Without tamper-proof checks at every step, long runs quietly drift off a cliff.
+   On a 1-step demo, a 10% chance of an agent faking a test pass is annoying. On a 10-step task chain, a single fake green at Step 2 silently poisons Steps 3 through 10. Without tamper-sealed checks at every step, long runs quietly drift off a cliff.
 2. **The "God-Mode Manager" Trap**
    Most multi-agent frameworks try to remove the human by putting a "Supervisor LLM" in charge with full repo access. When a worker gets stuck at 2 AM, the Supervisor LLM gets frustrated (or prompt-injected) and "helps" by lowering the bar, editing the test, or rubber-stamping bad code just to finish the job.
 
@@ -57,14 +61,14 @@ Every builder who has tried leaving coding agents running unattended hits the sa
 
 Most tools in the coding-agent ecosystem optimize for **speed, parallel branches, or compute isolation**—not for proving that a multi-step overnight run stayed honest. Comparing the five common architectural approaches:
 
-| Approach | Key Isolation | Tamper-Proof Tests | Zero-AI Gates | Wraps Any Commercial CLI | Primary Weakness on Overnight Runs |
+| Approach | Key Isolation | Tamper-Sealed Tests | Zero-AI Gates | Wraps Any Commercial CLI | Primary Weakness on Overnight Runs |
 | :--- | :---: | :---: | :---: | :---: | :--- |
 | **Solo Coding CLIs & `while true` Loops** | ✗ | ✗ | ✗ | ✓ | API keys live inside the CLI process; the agent can edit repo tests or `pytest.ini`/`conftest.py`; internal permission flags drift across CLI releases. |
 | **Parallel Git-Worktree & Swarm Runners** | ✗ | ✗ | ✗ | ✓ | Great for launching 5–30 parallel branches, but workers typically share your local UID, `.git` store, and raw host API keys—and trust self-reported test exits. |
 | **Supervisor-LLM Multi-Agent Frameworks** | ◐ | ✗ | ✗ | ◐ | Puts a prompt-injectable manager model in charge of approving or fixing stuck tasks; under long context or hostile repo text, the supervisor softens checks or rubber-stamps broken diffs. |
 | **Container & Cloud MicroVM Sandboxes** | ◐ | ✗ | ◐ | ✓ | Strong machine isolation, but **verification-blind**: an agent never needs to leave the sandbox to delete assertions, skip tests, or plant repo hooks/configs that run after handoff. |
 | **In-Process Policy & Guardrail Middleware** | ◐ | ✗ | ✓ | ✗ | Formal capability/flow wrappers require instrumenting a custom Python planner loop, so they cannot wrap closed-source commercial CLIs and do not grade code truth. |
-| **OPERATOR (`v0.1.0`)** | **✓** | **✓** | **✓** | **✓** | **Separates rules, jailed execution, tamper-proof checks, rival-family review, and bounded `[seat.op]` retries.** *(Trade-off at `v0.1.0`: sequential dispatch `concurrency = 1` today; parallel workers come next.)* |
+| **OPERATOR (`v0.1.0`)** | **✓** | **✓** | **✓** | **✓** | **Separates rules, jailed execution, tamper-sealed checks, cross-family review, and bounded `[seat.op]` retries.** *(Trade-off at `v0.1.0`: sequential dispatch `max_parallel = 1` today; parallel workers come next.)* |
 
 *Legend: **✓** enforced deterministically · **◐** partial or optional · **✗** not enforced.*
 
@@ -78,9 +82,9 @@ Think about what a human tech lead actually does during a long session—it is t
 flowchart LR
     A["1. You (Legislator)<br/>Sign team, file scopes,<br/>tests & budget once"] -->|signed SSH ruling| B["2. Jailed Workers<br/>No network, no API keys,<br/>scoped write access"]
     B -->|sealed patch| C["3. Deterministic Gates (0% AI)<br/>Git scope check + read-only<br/>pinned tests + budget ledger"]
-    C -->|checks pass| D["4. Blind Reviewer<br/>Different model family<br/>reviews diff vs spec"]
+    C -->|checks pass| D["4. Independent Reviewer<br/>Different model family<br/>reviews diff vs spec"]
     D -->|green verdict| E["Promote to<br/>Integration Branch"]
-    C -->|check fails| F["5. Shift-Operator [seat.op]<br/>Zero write access; 5 buttons:<br/>retry · reply · resolve · cancel · stop"]
+    C -->|check fails| F["5. Shift-Operator [seat.op]<br/>Bounded effect (no repo writes);<br/>5 verbs: retry · reply · resolve · cancel · stop"]
     F -->|clean retry + diagnostics| B
     D -->|red verdict / hard limit| G["Park Branch Cleanly<br/>for Human in Morning"]
 ```
@@ -90,37 +94,37 @@ You define the task graph (`contract.toml`), per-seat file write scopes and USD/
 
 ### 2. Deterministic Host Gates Stop Broken Steps Cold (0% AI)
 Before Step 2 is ever allowed to build on Step 1, host code verifies every candidate outside the worker's sandbox:
-- **Linux `bubblewrap` confinement:** Each worker runs in a fresh, networkless jail over a clean 1-commit worktree—no git history, no host home directory, and no raw API keys (a host-side broker injects credentials and enforces real spend caps).
+- **Linux `bubblewrap` confinement:** Each worker runs in a fresh, networkless jail over a clean 1-commit worktree—no git history, no host home directory, and no raw API keys (a host-side broker injects credentials and meters spend against built-in rate tables and per-attempt caps). Inside the jail, wrapped CLIs run with their own internal guardrails relaxed or disabled (such as `--sandbox danger-full-access` or `--mode yolo`) because the OS jail, broker, and Git import gate—not CLI flags—are the control boundary.
 - **Strict file-scope gate:** Any edit outside a seat's declared `write` globs is rejected before import.
-- **Tamper-proof test verification:** Tests run in a fresh clean-room jail against the pinned base commit with test files and runner configs (`pytest.ini`, `pyproject.toml`, `conftest.py`, etc.) mounted read-only, plus an in-process Python guard that catches skipped or hollow runs.
-- **Cross-family blind review:** Only after automated checks pass does a reviewer from a **different model family** inspect the diff against your spec (so broken candidates burn `$0` in review spend).
+- **Tamper-sealed test verification:** Tests run in a fresh clean-room jail against the pinned base commit with test files and root runner configs (`pytest.ini`, `pyproject.toml`, `conftest.py`, etc.) mounted read-only, plus a `pytest-guard` wrapper checking test collection and execution receipts.
+- **Independent cross-family review:** Only after automated checks pass does a reviewer seat from a **different model family** (enforced unless waived via `--waive same-family-review`) run in a read-only turn over the diff, contract receipts, and the worker's fenced self-report—so broken candidates burn `$0` in review spend.
 
 ### 3. `[seat.op]` Replaces the Human Babysitter (Bounded AI Executive)
 Normally, when a worker fails a test on Attempt 1, a human has to read the log and nudge it. In unattended runs, `[seat.op]` handles that loop automatically:
-- It has **zero write access** to the repository and **zero access** to API keys, shell commands, or test configs.
-- Its entire world is **5 strict actions**: `retry`, `reply`, `resolve`, `cancel`, `stop`.
+- Its **effect is strictly bounded by host code**: it runs with empty repo write grants, its attempts are never sealed or promoted, and it receives no raw API keys.
+- The engine reads only its directive JSON (`report.json`) and accepts **5 whitelisted verbs** (at most 8 actions per turn): `retry`, `reply`, `resolve`, `cancel`, `stop`.
 - When a worker fails a legitimate test, `op` triggers a clean retry and injects structured failure diagnostics from the prior attempt so the fresh worker doesn't wake up with amnesia and repeat the same mistake.
-- When a run hits a real red line—budget ceiling, retry cap, security/scope refusal, or a reviewer rejection—host code physically blocks `op` from clicking `resolve` or `retry` and parks that branch cleanly for you in the morning.
+- When a run hits a real red line—budget ceiling, retry cap, security/scope refusal, or a reviewer rejection—host code physically blocks `op` from clicking `resolve` (or retrying `review_red`) and parks that branch cleanly for you in the morning.
 
 ---
 
 ## Supported Coding CLIs
 
-OPERATOR wraps the coding CLIs you already use—no proprietary agent SDK required:
+OPERATOR wraps the coding CLIs you already use—no proprietary agent SDK required. Because CLI hook channels and flags vary by vendor, external confinement (`bubblewrap`, broker, Git import gate) enforces boundaries uniformly across all adapters:
 
-| Adapter | CLI | Notes |
-| :--- | :--- | :--- |
-| `claude-code` | Claude Code (`claude`) | Jailed turn, host-side API broker, PostToolUse fence hook |
-| `codex` | OpenAI Codex CLI (`codex`) | Jailed turn, host-side API broker, custom `model` override |
-| `opencode` | OpenCode (`opencode`) | Jailed turn, host-side API broker, multi-provider routing |
-| `zcode` | ZCode (`zcode`) | Jailed turn, host-side API broker |
-| `stub` | Built-in offline stub | Zero API keys; drives the entire engine for demos and CI |
+| Adapter | CLI | Tested Version | Tool Fencing | CI Conformance | Notes |
+| :--- | :--- | :--- | :--- | :---: | :--- |
+| `claude-code` | Claude Code (`claude`) | `2.1.318` | `hooked` (`PostToolUse`) | ✓ | Supports `[seat.op]` (`report_mount`) |
+| `codex` | OpenAI Codex CLI (`codex`) | `0.166.0` | `unfenced` | ✓ | Headless turn; no `report_mount` |
+| `opencode` | OpenCode (`opencode`) | `1.19.5` | `unfenced` | ✓ | Multi-provider; supports `[seat.op]` (`report_mount`) |
+| `zcode` | ZCode (`zcode`) | `0.17.1` | `hooked` (`PostToolUse`) | Experimental | `tested_classes = ["write"]`; not run in CI |
+| `stub` | Built-in offline stub | built-in | `unfenced` | ✓ | Zero API keys; driven by `plans/<task>.json` |
 
 ---
 
 ## Try It in 60 Seconds
 
-No API keys needed. The built-in demo runs two seats end to end, proves three real refusals (forged claim, out-of-scope write, and network isolation), and renders the live status panel.
+No API keys needed. The built-in demo runs offline in under a minute using stub seats, exercises sealed checks and jail refusals, and prints a one-line summary (cleaning up its temp directory unless `--keep` is passed; run `scripts/run-first-level-selftests.sh` for the full live-jail tick/review ladder).
 
 **Requirements:**
 - **Linux (native, recommended):** Python 3.11+, `git`, `bubblewrap` (`bwrap`), `pytest`.
@@ -210,16 +214,16 @@ bin/operator.sh review verdict r1 impl --by reviewer --green --key ~/operator-ke
 OPERATOR tests its own boundaries continuously in CI—not just happy paths:
 
 - **Cleanroom selftest battery:** `test/cleanroom.sh scripts/run-all-selftests.sh` runs every tool's selftest with `$HOME` hidden, network disabled, and the repo mounted read-only.
-- **Guard mutation checks:** `test/cleanroom.sh test/neuter.py` intentionally breaks 460+ individual security and logic guards one at a time and fails CI if any broken guard goes undetected (`0` allowed survivors).
-- **Sabotage & sandbox probes:** `test/hollow-battery-check.sh` verifies that common test-cheating tricks (skipping tests, editing `pytest.ini`/`conftest.py`, deleting assertions, symlink swaps) are caught under the sealed test overlay, while `test/conformance.sh` proves confinement against real pinned CLIs (`claude-code`, `codex`, `opencode`).
+- **Guard mutation sensitivity ratchet:** `test/cleanroom.sh test/neuter.py` applies 461 single-guard fault patches one at a time against reduced selftests (`OPERATOR_AST_MUTANTS=1`) and fails CI if any patched guard leaves its suite green (`0` allowed survivors).
+- **Sabotage & sandbox probes:** `test/hollow-battery-check.sh` verifies that common test-cheating tricks (skipping tests, editing `pytest.ini`/`conftest.py`, deleting assertions, symlink swaps) are caught under the sealed test overlay, while `test/conformance.sh` exercises write-scope and confinement cells against real pinned CLIs (`claude-code`, `codex`, `opencode`).
 - **Offline Sigstore Rekor verification:** `scripts/verify-rekor.py --selftest` verifies the transparency-log anchor for [CLAIMS.md](CLAIMS.md) completely offline.
 
 ### What v0.1.0 Does Not Claim
 
 We state our boundaries plainly in [LIMITATIONS](LIMITATIONS):
-- **Trusted host OS user:** A process running unsandboxed as your same host user can modify local state or logs (the hash-chained call log detects tampering after the fact; OS user isolation is the boundary).
-- **Secret vs. tamper-proof tests:** In-repo test suites are tamper-sealed, not hidden from reads; if you need completely hidden test vectors, keep them outside the git repo under the program's read-only directory.
-- **Sequential dispatch at v0.1.0:** Ready tasks execute sequentially (`concurrency = 1`) under a single run lock; parallel multi-worker dispatch is planned after v0.1.0.
+- **Trusted host OS user:** A process running unsandboxed as your same host user can modify local state or logs. The hash-chained `call-log.tsv` detects mid-file edits, but cannot detect rows cut off the end (tail truncation) without an external anchor; OS user isolation is the boundary.
+- **Secret vs. tamper-sealed tests:** In-repo test suites are tamper-sealed, not hidden from reads; if you need completely hidden test vectors, keep them outside the git repo under the program's read-only directory.
+- **Sequential dispatch at v0.1.0:** Ready tasks execute sequentially (`max_parallel = 1`) under a single run lock; parallel multi-worker dispatch is planned after v0.1.0.
 
 ---
 
@@ -239,7 +243,7 @@ We state our boundaries plainly in [LIMITATIONS](LIMITATIONS):
 ```text
 bin/                  Engine tools (one script per verb; bin/operator.sh is the front door)
 config/adapters/      Adapter manifests (claude-code, codex, opencode, zcode, stub)
-profiles/templates/   Ready-to-edit team + contract templates (feature, plan, research)
+profiles/templates/   Starter team + contract templates copied via `bin/operator.sh init` (do not edit in place)
 docs/                 Quickstart, authoring, and architecture guides
 scripts/              Docker wrapper, selftest runners, release lint, Rekor verifier
 test/                 Cleanroom battery, guard mutation tests, sabotage & CLI conformance suites
