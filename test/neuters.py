@@ -930,8 +930,8 @@ NEUTERS = [
     ("SP-collect-scrub", SP, '    out = text.replace(cred, "[credential-masked]")',
      '    out = text  # the channel ships the key raw'),
     # a tree git can't read is Void, never clean
-    ("SP-tree-void", SP, 'def _tree_read(parent, *args):\n    """A tree read that fails is Void -- a broken parent reads clean nowhere."""\n    return egit(parent, *args)',
-     'def _tree_read(parent, *args):\n    ok, out = egit_ok(parent, *args)\n    return out if ok else ""  # a failed read reads clean'),
+    ("SP-tree-void", SP, 'def _tree_read(parent, *args, raw=False):\n    """A tree read that fails is Void -- a broken parent reads clean nowhere."""\n    return egit_bytes(parent, *args) if raw else egit(parent, *args)',
+     'def _tree_read(parent, *args, raw=False):\n    ok, out = egit_ok(parent, *args)\n    return (out.encode() if ok else b"") if raw else (out if ok else "")'),
     # cancel never releases what it can't prove dead
     ("RN-cancel-unprovable", RN, '    return True if live else None  # a pid that exists but isn\'t ours: unprovable',
      '    return True if live else False  # unprovable reads dead: the release shape'),
@@ -1497,4 +1497,7 @@ NEUTERS = [
     ("CT-pytest-unwrapped", CT,
      '            if re.search(r"(?<![A-Za-z0-9_.-])pytest(?![A-Za-z0-9_])", cmd_pt) \\\n                    and _parse_pytest_cmd(cmd_pt, row.get("runner")) is None:',
      '            if False:'),
+    ("SP-nonutf8-gate", SP,
+     '    if non_utf8:\n        return f"non-utf8-path: {\' \'.join(non_utf8[:8])}"',
+     '    if False:\n        return ""'),
 ]

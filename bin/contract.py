@@ -885,7 +885,7 @@ def _apply_candidate_diff(repo, pin, commit, export, allowed_writes, resolved_or
                 blob = subprocess.run(["git", "-C", repo, "cat-file", "blob", new_oid],
                                       capture_output=True, stdin=subprocess.DEVNULL)
                 _assert_no_symlink_ancestors(export, rel_path, f"row {row_id}")
-                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                _mkdir_parent_or_finding(dst, f"row {row_id}")
                 if os.path.isdir(dst) and not os.path.islink(dst):
                     shutil.rmtree(dst, ignore_errors=True)
                 elif os.path.lexists(dst):
@@ -894,7 +894,7 @@ def _apply_candidate_diff(repo, pin, commit, export, allowed_writes, resolved_or
                     os.symlink(blob.stdout.decode("utf-8", "surrogateescape"), dst)
                 continue
             _assert_no_symlink_ancestors(export, rel_path, f"row {row_id}")
-            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            _mkdir_parent_or_finding(dst, f"row {row_id}")
             if os.path.isdir(dst) and not os.path.islink(dst):
                 shutil.rmtree(dst, ignore_errors=True)
             elif os.path.lexists(dst):
@@ -913,6 +913,13 @@ _RESERVED_GUARD_ENV = frozenset({
     "LD_PRELOAD", "LD_LIBRARY_PATH", "PYTHONINSPECT", "PYTHONSTARTUP",
     "PYTHONHOME", "HOME", "PATH", "PROG",
 })
+
+
+def _mkdir_parent_or_finding(dst, label):
+    try:
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+    except OSError as e:
+        raise Finding(f"{label}: candidate obstructed parent directory ({e})")
 
 
 def _parse_pytest_cmd(cmd_str, runner_override=None):
@@ -1173,7 +1180,7 @@ def run_check(row, prog, repo, commit, arm, results, prog_key, record_log=True, 
                                               capture_output=True, stdin=subprocess.DEVNULL)
                         if blob.returncode == 0:
                             _assert_no_symlink_ancestors(export, rel_cfg, f"row {row['id']}")
-                            os.makedirs(os.path.dirname(cand_cfg), exist_ok=True)
+                            _mkdir_parent_or_finding(cand_cfg, f"row {row['id']}")
                             if os.path.isdir(cand_cfg) and not os.path.islink(cand_cfg):
                                 shutil.rmtree(cand_cfg, ignore_errors=True)
                             elif os.path.lexists(cand_cfg):
@@ -2745,6 +2752,14 @@ deps = ["tests.frozen"]
         check(r_unwrapped.returncode == 1 and "bypasses pytest-guard" in r_unwrapped.stderr
               and r_raw_opt.returncode == 0,
               f"K8b unwrapped sealed pytest refused at validate unless runner='raw': rc={r_unwrapped.returncode}/{r_raw_opt.returncode}")
+        blk_file = os.path.join(adv_base, "blocker_file")
+        open(blk_file, "w").write("x")
+        got_obst = False
+        try:
+            _mkdir_parent_or_finding(os.path.join(blk_file, "conftest.py"), "row r1")
+        except Finding:
+            got_obst = True
+        check(got_obst, "K8c obstructed parent directory raises Finding instead of raw OSError")
     finally:
         shutil.rmtree(adv_base, ignore_errors=True)
 

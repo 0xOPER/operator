@@ -1849,7 +1849,8 @@ def _drive(prog, run_name, rd, tasks, adapters):
             drove.append({"attempt": aid, "task": task, "result": str(r)})
         except (spawn_mod.Refused, spawn_mod.Void, Refused,
                 review_mod.Refused, review_mod.Void,
-                contract_mod.Void, contract_mod.Finding) as e:
+                contract_mod.Void, contract_mod.Finding,
+                OSError, ValueError) as e:
             adir_eff = adir or (os.path.join(rd, "attempts", aid) if aid else None)
             if adir_eff and os.path.isdir(adir_eff):
                 try:

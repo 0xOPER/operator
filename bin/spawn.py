@@ -213,6 +213,16 @@ def egit_ok(repo, *args, commit=False):
     return r.returncode == 0, r.stdout
 
 
+def egit_bytes(repo, *args, commit=False):
+    """Raw-bytes twin of egit for -z NUL-delimited git output (never UTF-8 text=True)."""
+    r = subprocess.run(["git", "-C", repo, *args], capture_output=True,
+                       env=engine_env(commit))
+    if r.returncode != 0:
+        err = (r.stderr or r.stdout).decode("utf-8", "replace").strip()[:160]
+        raise Void(f"git {' '.join(args[:2])}: {err}")
+    return r.stdout
+
+
 def with_run_lock(attempt_or_rd, fn):
     """Step 13's per-program lock: the parent's refs move under the run's lock, one
     spawner at a time, busy is rc 3."""
@@ -568,9 +578,10 @@ def hidden_names(repo, grants):
     the brief, fenced, read from the parent by the engine."""
     named = named_of(grants)
     out = []
-    for path in egit(repo, "ls-tree", "-r", "--name-only", "-z", "HEAD").split("\0"):
-        if not path:
+    for raw_p in egit_bytes(repo, "ls-tree", "-r", "--name-only", "-z", "HEAD").split(b"\0"):
+        if not raw_p:
             continue
+        path = raw_p.decode("utf-8", "surrogateescape")
         parts = [unicodedata.normalize("NFC", p).casefold() for p in path.split("/")]
         if parts[-1] in INSTRUCTION_NAMES_FOLD and parts[-1] not in named:
             out.append(path)
@@ -613,7 +624,11 @@ def build_attempt(rd, seat, grants, ref, aid, task, prog, seats):
                 raise Void("the clone hardlinked parent objects")
     egit_ok(stage_repo, "remote", "remove", "origin")
     start_sha = egit(stage_repo, "rev-parse", "HEAD").strip()
-    tracked = [t for t in egit(stage_repo, "ls-tree", "-r", "--name-only", "-z", "HEAD").split("\0") if t]
+    tracked = [
+        t.decode("utf-8", "surrogateescape")
+        for t in egit_bytes(stage_repo, "ls-tree", "-r", "--name-only", "-z", "HEAD").split(b"\0")
+        if t
+    ]
     # checkout VISIBILITY names the write grants PLUS the seat's `see` set: the
     # walk's row -- visibility rode the write grant, so naming a tree visible
     # (a .github with a hundred files) meant widening DELIVERY. `see` names
@@ -2173,9 +2188,9 @@ def repo_shapes(tree_paths, changed_paths):
             ((has(d, "objects") and has(d, "refs")) or has(d, "commondir"))]
 
 
-def _tree_read(parent, *args):
+def _tree_read(parent, *args, raw=False):
     """A tree read that fails is Void -- a broken parent reads clean nowhere."""
-    return egit(parent, *args)
+    return egit_bytes(parent, *args) if raw else egit(parent, *args)
 
 
 def check_tree(parent, frm, to, grants):
@@ -2183,6 +2198,18 @@ def check_tree(parent, frm, to, grants):
     gitlink modes, no sensitive names. Returns a refusal reason or None."""
     # every git read goes through _tree_read -> egit: a git FAILURE is Void,
     # never "clean" (the crash lens caught all three reads ignoring their failures)
+    z = _tree_read(parent, "diff-tree", "-r", "-z", "--no-renames",
+                   "--name-only", frm, to, raw=True)
+    non_utf8 = []
+    for p_raw in z.split(b"\0"):
+        if not p_raw:
+            continue
+        try:
+            p_raw.decode("utf-8")
+        except UnicodeDecodeError:
+            non_utf8.append(p_raw.decode("utf-8", "backslashreplace"))
+    if non_utf8:
+        return f"non-utf8-path: {' '.join(non_utf8[:8])}"
     ex = [f":(exclude,glob){g}" for g in grants]
     out = _tree_read(parent, "diff-tree", "-r", "--no-renames", "--name-only", frm, to,
                      "--", ".", *ex)
@@ -2193,8 +2220,6 @@ def check_tree(parent, frm, to, grants):
                  if len(l.split()) > 4 and l.split()[1] in ("120000", "160000")]
     if bad_modes:
         return f"mode: {' '.join(bad_modes[:8])}"
-    z = _tree_read(parent, "diff-tree", "-r", "-z", "--no-renames",
-                   "--name-only", frm, to).encode()
     hits = sensitive_hits(z.split(b"\0"), grants)
     if hits:
         return f"sensitive: {' '.join(hits[:8])}"
@@ -2560,6 +2585,8 @@ def main(argv):
         die(f"VOID, {e}", 2)
     except json.JSONDecodeError as e:
         die(f"a record doesn't parse: {e}", 2)
+    except (OSError, ValueError) as e:
+        die(f"VOID, {e}", 2)
     return 0
 
 
@@ -4306,6 +4333,22 @@ def selftest():
             check(False, "Z5b admit unknown seat must Refuse")
         except (Refused, Void):
             check(True, "Z5b admit unknown seat refused")
+        # Z6 (H6) non-UTF-8 filename in candidate bundle refuses cleanly at import_gate without UnicodeDecodeError
+        nu_rd, nu_parent, nu_base = _world(base, "nu-run", {"src/ok.py": "1\n"})
+
+        def _plant_nonutf8(frepo):
+            os.makedirs(os.path.join(frepo, "src"), exist_ok=True)
+            bad_p = os.path.join(os.fsencode(frepo), b"src", b"bad-\xff.py")
+            with open(bad_p, "wb") as bf:
+                bf.write(b"x = 1\n")
+            subprocess.run(["git", "-C", frepo, "add", "-A"], check=True, capture_output=True, env=engine_env())
+            subprocess.run(["git", "-C", frepo, "commit", "-qm", "nonutf8"], check=True, capture_output=True, env=engine_env(commit=True))
+
+        nu_adir = _forge(nu_rd, nu_parent, "nu-01", nu_base, ["src/**"], _plant_nonutf8)
+        nu_state, nu_rc = import_gate(nu_adir)
+        nu_ref_ok, _ = egit_ok(nu_parent, "rev-parse", "--verify", "refs/attempts/nu-01")
+        check(nu_rc == 5 and nu_state.startswith("REFUSED non-utf8-path:") and not nu_ref_ok,
+              f"Z6 non-UTF-8 path refused cleanly and attempt ref dropped: state={nu_state!r} rc={nu_rc}")
 
         print(f"selftest: OK ({ok[0]} checks)" if ok[0] and not bad[0] else "selftest: FAIL")
         return 0 if ok[0] and not bad[0] else 1
