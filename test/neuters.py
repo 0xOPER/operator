@@ -1638,6 +1638,11 @@ NEUTERS = [
     ("BK-usage-ledger-null", BK,
      'if isinstance(v, float) and not math.isfinite(v):',
      'if False:'),
+    # an informational status is not the answer: only a 100 was read past, and a 103
+    # reached the jail as a whole turn with no body (P1, P2)
+    ("BK-resp-interim-read", BK,
+     'while 100 <= resp.status < 200:',
+     'while False:'),
     # --- the sealed check's export: the candidate's exec bit ---
     # it rides at all: without it a script the candidate adds isn't executable (K9a)
     ("CT-exec-bit", CT,

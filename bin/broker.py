@@ -219,6 +219,17 @@ def forwarded_response_header(k, v):
                                    or lk.startswith(FORWARDED_HEADER_PREFIXES))
 
 
+def final_response(resp):
+    """The origin's final answer. An informational status is not one (http.client
+    itself reads past a 100): read on for the status that is. A 103 from a gateway
+    used to be the whole turn -- framed with no body, a row that said the turn was
+    done, and a connection then waiting on the client."""
+    while 100 <= resp.status < 200:
+        resp.headers = None        # begin()'s own mark for "not read yet"
+        resp.begin()
+    return resp
+
+
 def _ledger_json(v):
     """The row is strict JSON: a non-finite number in what the origin reported (a
     usage count spelled 1e400 or NaN) is written as null, never as Infinity or NaN."""
@@ -422,7 +433,7 @@ class Handler(BaseHTTPRequestHandler):
             up.request("POST", base + path + ("?" + self.path.split("?")[1]
                                               if "?" in self.path else ""),
                        body=body, headers=headers)
-            resp = up.getresponse()
+            resp = final_response(up.getresponse())
         except (OSError, http.client.HTTPException) as e:
             self._refuse(502, f"the origin refused: {type(e).__name__}")
             log_row(path, self.server.log, status=502, seat=client_seat,
@@ -1395,6 +1406,10 @@ def selftest():
                 "    b'/v1/messages?k=cut': head(SSE, b'Transfer-Encoding: chunked\\r\\n') + "
                 "b'58\\r\\n' + sse[:40],\n"
                 "    b'/v1/messages?j=cut': head(JSON, cl=b'50') + b'{\"usage\":{}',\n"
+                "    b'/v1/messages?i=103': b'HTTP/1.1 103 Early Hints\\r\\n"
+                "Link: </s.css>; rel=preload\\r\\n\\r\\n' + head(SSE, cl=b'88') + sse,\n"
+                "    b'/v1/messages?i=101': b'HTTP/1.1 101 Switching Protocols\\r\\n\\r\\n"
+                "\\x00\\x01\\x02not http',\n"
                 "    b'/v1/messages?l=clean': head(JSON, cl=b'2') + b'{}',\n"
                 "    b'/v1/messages?l=name': head(JSON, cl=b'2') + b'{}',\n"
                 "}\n"
@@ -1647,6 +1662,17 @@ def selftest():
                   and rows_n[0].get("usage", {}).get("input_tokens") == count_n
                   and 1e13 < (rows_n[0].get("cost_usd") or 0) < 1e14,
                   f"{label_n} is answered and still gets its row: {out_n[:60]!r} {rows_n}")
+        # P an informational status is not an answer (http.client itself reads past a
+        # 100): a 103 used to reach the jail as the whole turn, framed with no body,
+        # its row saying the turn was done, and the connection then waiting on the client
+        out_p, _, rows_p = raw_turn_logged(b"/v1/messages?i=103")
+        check(halves(out_p)[1] == sse_b and len(rows_p) == 1 and rows_p[0].get("status") == 200
+              and rows_p[0].get("usage") == {"input_tokens": 7, "output_tokens": 3},
+              f"P1 a 103 before the answer is read past: {out_p[:60]!r} {rows_p}")
+        out_p, _, rows_p = raw_turn_logged(b"/v1/messages?i=101")
+        check(out_p.startswith(b"HTTP/1.1 502 ") and len(rows_p) == 1
+              and rows_p[0].get("status") == 502,
+              f"P2 a 101 and whatever follows it is no answer: 502 and a row: {out_p[:60]!r} {rows_p}")
         p_rawbr.terminate()
         p_raw.terminate()
         p_rawbr.wait(timeout=10)
