@@ -25,6 +25,7 @@ PL2 = "profiles/templates/plan/checks/goals_lint.py"
 SK = "bin/skills.py"
 FE = "bin/untrusted-span-fence.py"
 RL = "scripts/release-lint.py"
+VP = "scripts/verify-ci-pins.py"
 OP = "bin/operator.sh"
 PT = "bin/lib/paths"
 OPT = "bin/operator.sh --selftest"
@@ -170,6 +171,33 @@ NEUTERS = [
     ("RL-archive", RL, 'if ls.returncode or set(filter(None, ls.stdout.decode(errors="surrogateescape").split("\\0"))) != got:', "if False:"),
     ("RL-samples", RL, "if rx.search(s)]", "if False]"),
     ("RL-unread", RL, "except (OSError, UnicodeDecodeError) as e:\n            print(f\"release-lint: VOID -- {e}\", file=sys.stderr)\n            return 2", "except (OSError, UnicodeDecodeError) as e:\n            raise"),
+    # what CI installs, it installs by hash: the lockfile, the manifest, the workflows'
+    # npm commands, the Dockerfile's FROM, and a missing file read as VOID, never as clean
+    ("VP-lock-version", VP, '    if lock.get("lockfileVersion") != 3:', "    if False:"),
+    ("VP-lock-entries", VP, "    if not entries:", "    if False:"),
+    ("VP-lock-integrity", VP, '        if not INTEGRITY.fullmatch(e.get("integrity") or ""):', "        if False:"),
+    ("VP-integrity-shape", VP, 'INTEGRITY = re.compile(r"sha512-[A-Za-z0-9+/]{86}==")', 'INTEGRITY = re.compile(r"sha512-.*")'),
+    ("VP-lock-resolved", VP, '        if not (e.get("resolved") or "").startswith(REGISTRY):', "        if False:"),
+    ("VP-manifest-deps", VP, "    if not deps:", "    if False:"),
+    ("VP-manifest-exact", VP, '        if not EXACT.fullmatch(str(spec)):', "        if False:"),
+    ("VP-exact-shape", VP, r'EXACT = re.compile(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?")', 'EXACT = re.compile(r".*")'),
+    ("VP-manifest-scripts", VP, "        if doc.get(key):", "        if False:"),
+    ("VP-managers", VP, r"(?P<tool>npm|npx|pnpm|yarn)", r"(?P<tool>npm)"),
+    ("VP-npm-path", VP, r"(?:\S*/)?(?P<tool>", r"(?P<tool>"),
+    ("VP-comment-line", VP, '        if line.lstrip().startswith("#"):', "        if False:"),
+    ("VP-npm-ci", VP, '            if m.group("tool") == "npm" and argv[:1] == ["ci"] and "--ignore-scripts" in argv[1:]:',
+     '            if m.group("tool") == "npm" and "--ignore-scripts" in argv[1:]:'),
+    ("VP-ignore-scripts", VP, 'and "--ignore-scripts" in argv[1:]:', "and True:"),
+    ("VP-digest-shape", VP, r'(?::[A-Za-z0-9_][A-Za-z0-9._-]*)?@sha256:[0-9a-f]{64}")',
+     r'(?::[A-Za-z0-9_][A-Za-z0-9._-]*)?(?:@sha256:[0-9a-f]{64})?")'),
+    ("VP-from-digest", VP, '        if m and not DIGEST.fullmatch(m.group(1)):', "        if False:"),
+    ("VP-workflows", VP, "        if not flows:", "        if False:"),
+    ("VP-void", VP, "    except (OSError, ValueError) as e:\n        raise Void(str(e)) from e",
+     "    except (OSError, ValueError):\n        pass"),
+    ("VP-exit", VP, "    return 1 if hits else 0", "    return 0"),
+    ("VP-cli-void", VP, '        print(f"verify-ci-pins: VOID -- {e}", file=sys.stderr)\n        return 2',
+     '        print(f"verify-ci-pins: VOID -- {e}", file=sys.stderr)\n        return 0'),
+    ("VP-empty-root", VP, '    if a.root == "":', "    if False:"),
     # CLI
     ("OP-version", OP, """printf 'operator %s\\n' "$v"; exit 0 ;;""", "echo operator; exit 0 ;;"),
     ("OP-noversion", OP, 'v=$(cat "$ROOT/VERSION" 2>/dev/null) && [ -n "$v" ] ||', 'v=$(cat "$ROOT/VERSION" 2>/dev/null) ||'),

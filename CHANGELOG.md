@@ -19,6 +19,7 @@ All notable changes to OPERATOR are documented in this file.
 
 ### CI
 - `Dockerfile`: the base image is pinned by digest (`ubuntu:24.04@sha256:562111b8...`), so the image CI builds is the one that was reviewed and not whatever the tag serves that day.
+- `.github/workflows/ci.yml`, `.github/workflows/proofs.yml`: the CLIs the conformance and proof cells run are installed from a committed lockfile (`test/cli-pins/package-lock.json`: every tarball by its sha512, checked against the registry's own bytes) with `npm ci --ignore-scripts`, as the runner's user and not as root. The workflows used to name versions and trust whatever the registry served that day, as root, running whatever the packages called a postinstall. What those postinstalls do (stand the linux-x64 binary at the wrapper's bin) is done by link instead. `scripts/verify-ci-pins.py` refuses a tree where an npm command installs any other way, a lockfile entry has no hash or no registry URL, a dependency is not at an exact version, or a `FROM` has no digest.
 
 ## `v0.1.0` — 2026-11-26
 
