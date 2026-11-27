@@ -349,10 +349,12 @@ PY
     shell-allowed)
       # A seat's shell: commands run inside the jail, and the jail is the law
       # on every shipped adapter. None of the three keeps a per-command law:
-      # two have no permission layer at their pins, and the third admits the
-      # commands its own sandbox deems safe without asking (measured). So a
-      # command's in-tree effect lands, and its out-of-tree effect is refused
-      # by the read-only bind. The stock manifest: the jail is the layer proved
+      # two have no permission layer at their pins, and the third runs the
+      # commands its own analysis deems safe with no rule and asks before the
+      # rest (measured at the pin: a write into an existing directory runs,
+      # creating the directory asks). So a command's in-tree effect lands, and
+      # its out-of-tree effect is refused. The stock manifest: the jail is the
+      # layer proved; the fixture provides the directory the command writes in
       python3 - "$PROG/team.toml" <<'PY'
 import pathlib, re, sys
 p = pathlib.Path(sys.argv[1]); t = p.read_text(encoding="utf-8")
@@ -373,8 +375,8 @@ line = re.search(r'^tested_classes = \[.*\]$', text, re.M)
 assert line, "no tested line in the manifest"
 pathlib.Path(out).write_text(text.replace(line.group(0), "tested_classes = " + str(classes).replace("'", '"'), 1), encoding="utf-8")
 PY
-      emit_shell '"mkdir -p src && printf shell-ok-5d9e > src/shell-ok.txt"' > "$D/tool.json"
-      OPERATOR_ADAPTERS="$SH_ADAPTERS" engine_cell_run sh-in-jail || { cleanup_daemons; exit 1; }
+      emit_shell '"printf shell-ok-5d9e > src/shell-ok.txt"' > "$D/tool.json"
+      OPERATOR_ADAPTERS="$SH_ADAPTERS" engine_cell_run sh-in-jail src || { cleanup_daemons; exit 1; }
       [ "$(cat "$ADIR/repo/src/shell-ok.txt" 2>/dev/null)" = "shell-ok-5d9e" ] \
         || { echo "  shell-allowed: FAIL (the in-tree command never landed: $(head -c 120 "$ADIR/repo/src/shell-ok.txt" 2>/dev/null))"; cleanup_daemons; exit 1; }
       emit_shell '"echo x > /w/compiled/evil.txt 2>&1 || true"' > "$D/tool.json"

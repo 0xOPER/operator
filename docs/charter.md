@@ -192,9 +192,10 @@ one log row per connection; `network` is in the `tested_classes` of
 cell; a credential shape riding a request head is refused and logged (the
 `net-allowed` cell proves it in a real jail). `shell` is in the same three
 adapters' `tested_classes`: commands run inside the jail and the jail is the
-law, because no shipped adapter keeps a per-command law (`claude-code` admits
-the commands its own sandbox deems safe; the other two have no permission
-layer at their pins), so the prefix scoping the plan imagined waits for an
+law, because no shipped adapter keeps a per-command law (`claude-code` runs
+the commands its own analysis deems safe with no rule and asks before the
+rest; the other two have no permission layer at their pins), so the prefix
+scoping the plan imagined waits for an
 adapter that can. The `declared` rule is built: `operator reach allow <dir>
 --seat <seat> --host <host>`, and the operator seat's `net.allow` directive,
 open one host on 443 for a seat that already holds a network grant, for

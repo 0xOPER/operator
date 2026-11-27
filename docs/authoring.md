@@ -292,11 +292,14 @@ A derived row is a starting point. One that needs what the jail does not have
 
 `shell = ["*"]` lets a seat run shell commands. On every shipped adapter the
 law is the jail, not a per-command rule: `codex` and `opencode` have no
-permission layer at their pins, and `claude-code` admits the commands its own
-sandbox deems safe without asking. So a command's in-tree effect lands, and
-its out-of-tree effect (a write outside the repository, a host path, the
-network) is refused by the jail and the proxy. No shipped adapter enforces
-command prefixes; the grammar accepts them, for an adapter that can.
+permission layer at their pins, and `claude-code` runs the commands its own
+analysis deems safe with no rule and asks before the rest (measured at the
+pin: a write into an existing directory runs; creating the directory asks).
+So a command's in-tree effect lands, and its out-of-tree effect (a write
+outside the repository, a host path, the network) is refused: by the jail and
+the proxy on `codex` and `opencode`, and on `claude-code` by the CLI's own
+check first, with the jail behind it. No shipped adapter enforces command
+prefixes; the grammar accepts them, for an adapter that can.
 
 ### Templates and state
 

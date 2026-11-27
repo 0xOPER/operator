@@ -58,13 +58,17 @@ TOML
   return 0
 }
 
-# engine_cell_run <id> -- one twin: tool.json carries THIS twin's tool call,
-# the attempt runs through the real jail, $ADIR points at it afterwards
+# engine_cell_run <id> [dir] -- one twin: tool.json carries THIS twin's tool
+# call, the attempt runs through the real jail, $ADIR points at it afterwards.
+# dir is a path under the attempt's repo, created before the turn: a fixture
+# the command writes into.
 engine_cell_run() {
   local id=$1 rc issued=0
+  local pre_dir=${2:-}
   rm -f "$D/req.log"
   ADIR=$(python3 "$ROOT/bin/spawn.py" attempt "$RD" --id "$id" --seat w \
     --grants "src/**" --task r1 --prog "$PROG") || return 2
+  [ -z "$pre_dir" ] || mkdir -p "$ADIR/repo/$pre_dir"
   python3 "$ROOT/bin/spawn.py" compose "$ADIR" >/dev/null || return 2
   timeout -k 10 240 python3 "$ROOT/bin/spawn.py" adapter "$ADIR" --timeout 200 \
     > "$D/drive-$id.out" 2> "$D/drive-$id.err"

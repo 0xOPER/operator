@@ -344,10 +344,11 @@ def check_grant(sname, kind, value):
                     or ".." in v.split("/"):
                 raise Finding(f"seat {sname}: {kind} {v!r} must be a repo-relative path glob")
         elif kind == "shell":
-            # a command prefix compiles to a `Bash(prefix:*)` rule on the CLIs
-            # that have a permission layer: words, never shell syntax. A
-            # trailing ` *` names the tool with any arguments, as the bare
-            # prefix already does
+            # a command prefix is words, never shell syntax, for an adapter
+            # that can enforce it. It is not compiled to the CLI's permission
+            # rules: no shipped adapter keeps a per-command law (docs/authoring.md,
+            # the seat's shell). A trailing ` *` names the tool with any
+            # arguments, as the bare prefix already does
             if v != "*" and not re.fullmatch(r"[A-Za-z0-9_./-][A-Za-z0-9_./ -]{0,63}( \*)?", v):
                 raise Finding(f"seat {sname}: shell {v!r} must be a command prefix "
                               "(words, no shell syntax) or *")
