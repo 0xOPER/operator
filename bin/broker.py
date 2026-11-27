@@ -1348,6 +1348,7 @@ def selftest():
         # I3 (G1) early client disconnect on SSE stream still logs usage + client_gone and charges attempt cap
         tok_g1 = f"op-seat:writer:g1:{hmac.new(sk.encode(), b'writer:g1', hashlib.sha256).hexdigest()[:16]}"
         for _ in range(2):
+            n_g1 = len(rows_of(log_mp2))
             cs_g1 = _s.socket(_s.AF_UNIX, _s.SOCK_STREAM)
             cs_g1.connect(sock_mp2)
             req_b = json.dumps({"model": "claude-sonnet-4-6", "stream": True}).encode()
@@ -1359,13 +1360,19 @@ def selftest():
             )
             cs_g1.recv(32)
             cs_g1.close()
-            time.sleep(0.2)
+            # the disconnected turn's row lands once its handler is done with the
+            # origin and has charged the attempt: wait for that, not for a clock
+            rows_after(log_mp2, n_g1)
+        n_g1 = len(rows_of(log_mp2))
         c_g1_3 = UnixMP2()
         c_g1_3.request("POST", "/v1/messages", body=json.dumps({"model": "claude-sonnet-4-6"}),
                        headers={"Content-Type": "application/json", "x-api-key": tok_g1})
         r_g1_3 = c_g1_3.getresponse()
         r_g1_3.read()
-        rows_g1 = [json.loads(x) for x in open(log_mp2) if json.loads(x).get("attempt") == "g1"]
+        # a refusal's row is written after its bytes: read the ledger the moment the
+        # 429 arrives and the arm races the handler for its third row
+        rows_after(log_mp2, n_g1)
+        rows_g1 = [x for x in rows_of(log_mp2) if x.get("attempt") == "g1"]
         check(len(rows_g1) == 3
               and rows_g1[0].get("client_gone") is True
               and (rows_g1[0].get("usage") or {}).get("input_tokens") == 300
