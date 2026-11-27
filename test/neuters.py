@@ -1643,6 +1643,15 @@ NEUTERS = [
     ("BK-resp-interim-read", BK,
      'while 100 <= resp.status < 200:',
      'while False:'),
+    # the broker asks for identity and reads the body to meter it: an answer coded
+    # anyway is refused with a row, never relayed unread (Q1)
+    ("BK-resp-coded-refuse", BK,
+     'if origin_coded(resp):',
+     'if False:'),
+    # ...and a coding of identity is none: such an answer rides (Q2)
+    ("BK-resp-coded-identity", BK,
+     'return any(tok.strip().lower() not in ("", "identity") for tok in codings)',
+     'return any(tok.strip().lower() not in ("",) for tok in codings)'),
     # --- the sealed check's export: the candidate's exec bit ---
     # it rides at all: without it a script the candidate adds isn't executable (K9a)
     ("CT-exec-bit", CT,

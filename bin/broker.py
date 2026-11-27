@@ -230,6 +230,14 @@ def final_response(resp):
     return resp
 
 
+def origin_coded(resp):
+    """True when the origin coded its body. The broker asks for identity and reads the
+    body to meter it: a coded body would reach the jail undecodable and the ledger
+    unmetered, so it is refused instead. A coding of identity is none."""
+    codings = (resp.getheader("Content-Encoding") or "").split(",")
+    return any(tok.strip().lower() not in ("", "identity") for tok in codings)
+
+
 def _ledger_json(v):
     """The row is strict JSON: a non-finite number in what the origin reported (a
     usage count spelled 1e400 or NaN) is written as null, never as Infinity or NaN."""
@@ -436,6 +444,14 @@ class Handler(BaseHTTPRequestHandler):
             resp = final_response(up.getresponse())
         except (OSError, http.client.HTTPException) as e:
             self._refuse(502, f"the origin refused: {type(e).__name__}")
+            log_row(path, self.server.log, status=502, seat=client_seat,
+                    attempt=client_attempt, model=req_model or None)
+            return
+        if origin_coded(resp):
+            # the body the broker cannot read is not relayed: the jail would get bytes
+            # it cannot decode and the ledger a turn with no usage
+            up.close()
+            self._refuse(502, "the origin coded its answer; the broker reads it plain")
             log_row(path, self.server.log, status=502, seat=client_seat,
                     attempt=client_attempt, model=req_model or None)
             return
@@ -1380,6 +1396,7 @@ def selftest():
                 "        out += b'Content-Length: ' + cl + b'\\r\\n'\n"
                 "    return out + b'\\r\\n'\n"
                 "JSON, SSE = b'application/json', b'text/event-stream'\n"
+                "gz = __import__('gzip').compress(b'{\"usage\":{\"input_tokens\":5,\"output_tokens\":6}}')\n"
                 "inf_j = b'{\"usage\":{\"input_tokens\":1e400,\"output_tokens\":1}}'\n"
                 "huge_j = b'{\"usage\":{\"input_tokens\":1' + b'0' * 320 + b',\"output_tokens\":1}}'\n"
                 "float_j = b'{\"usage\":{\"input_tokens\":1e300,\"output_tokens\":1}}'\n"
@@ -1410,6 +1427,9 @@ def selftest():
                 "Link: </s.css>; rel=preload\\r\\n\\r\\n' + head(SSE, cl=b'88') + sse,\n"
                 "    b'/v1/messages?i=101': b'HTTP/1.1 101 Switching Protocols\\r\\n\\r\\n"
                 "\\x00\\x01\\x02not http',\n"
+                "    b'/v1/messages?j=gzip': head(JSON, b'Content-Encoding: gzip\\r\\n',"
+                " cl=str(len(gz)).encode()) + gz,\n"
+                "    b'/v1/messages?k=identity': head(SSE, b'Content-Encoding: identity\\r\\n', cl=b'88') + sse,\n"
                 "    b'/v1/messages?l=clean': head(JSON, cl=b'2') + b'{}',\n"
                 "    b'/v1/messages?l=name': head(JSON, cl=b'2') + b'{}',\n"
                 "}\n"
@@ -1673,6 +1693,16 @@ def selftest():
         check(out_p.startswith(b"HTTP/1.1 502 ") and len(rows_p) == 1
               and rows_p[0].get("status") == 502,
               f"P2 a 101 and whatever follows it is no answer: 502 and a row: {out_p[:60]!r} {rows_p}")
+        # Q the broker asks the origin for identity and reads the body to meter it: an
+        # answer that is coded anyway is refused, with a row -- it used to ride as a 200
+        # the jail could not decode and the ledger could not read
+        out_q, _, rows_q = raw_turn_logged(b"/v1/messages?j=gzip")
+        check(out_q.startswith(b"HTTP/1.1 502 ") and len(rows_q) == 1
+              and rows_q[0].get("status") == 502,
+              f"Q1 a coded origin answer is refused 502 and leaves its row: {out_q[:60]!r} {rows_q}")
+        out_q, _, _ = raw_turn_logged(b"/v1/messages?k=identity")
+        check(halves(out_q)[1] == sse_b,
+              f"Q2 an answer coded as identity rides: {out_q[:80]!r}")
         p_rawbr.terminate()
         p_raw.terminate()
         p_rawbr.wait(timeout=10)
