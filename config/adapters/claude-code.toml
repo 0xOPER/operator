@@ -6,7 +6,7 @@ version_tested = "2.1.318"
 default_model = "claude-sonnet-4-6"
 # every grant class the conformance cells proved for this adapter (C9 fills
 # the final list; these are P's direct observations)
-tested_classes = ["write", "network", "shell"]
+tested_classes = ["write", "network", "shell", "read"]
 # the worker argv: {BRIEF} is the fenced brief the engine composed; {MODEL}
 # resolves from [seat.<name>].model in team.toml (or default_model above).
 # NO --permission-mode: acceptEdits auto-approves every edit in the project

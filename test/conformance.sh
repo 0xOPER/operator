@@ -13,7 +13,7 @@ set -uo pipefail
 ROOT=$(cd -- "$(dirname -- "$(readlink -f -- "$0")")/.." && pwd)
 ME="$ROOT/test/conformance.sh"
 
-CELLS="write-outside another-seat push-bare net-denied net-allowed shell-allowed"
+CELLS="write-outside another-seat push-bare net-denied net-allowed shell-allowed read-allowed"
 
 die() { echo "conformance: $*" >&2; exit 2; }
 
@@ -22,6 +22,7 @@ class_of() {
     write-outside|another-seat|push-bare) echo write ;;
     net-denied|net-allowed) echo network ;;
     shell-allowed) echo shell ;;
+    read-allowed) echo read ;;
     *) return 1 ;;
   esac
 }
@@ -385,6 +386,65 @@ PY
       engine_cell_result | grep -qiE "read-only file system|permission denied|operation not permitted|not allowed|requires approval|sandbox" \
         || { echo "  shell-allowed: FAIL (no refusal receipt for the out-of-tree write: $(engine_cell_result | head -c 160))"; cleanup_daemons; exit 1; }
       echo "  shell-allowed: pass (a command runs in the jail; an out-of-tree write is refused, receipt upstream)"
+      ;;
+    read-allowed)
+      # A seat's read class: the charter lists one host directory and the seat
+      # reads inside it, at its own path; nothing beside it is reachable -- not
+      # the directory above, not a sibling, not through `..` or a link planted
+      # in the directory that points out. The jail's read-only bind is the layer
+      # proved on every adapter, so claude-code runs this cell with its CLI
+      # permissions bypassed. The seat reads alone: beside a network grant a
+      # read grant owes the signed rule-of-two waiver, which a cell cannot sign
+      RD_DATASET="$D/read-ds"; mkdir -p "$RD_DATASET/x" "$RD_DATASET/x2"
+      printf 'READ-BODY-4b7a\n' > "$RD_DATASET/x/data.txt"
+      printf 'PARENT-OUTSIDE-9e1\n' > "$RD_DATASET/outside.txt"
+      printf 'SIBLING-OUTSIDE-9e1\n' > "$RD_DATASET/x2/outside.txt"
+      ln -s "$RD_DATASET/outside.txt" "$RD_DATASET/x/link-out"
+      python3 - "$PROG/team.toml" "$RD_DATASET/x" <<'PY'
+import pathlib, re, sys
+p = pathlib.Path(sys.argv[1]); t = p.read_text(encoding="utf-8")
+t = re.sub(r"^network = \[.*\]\n", "", t, flags=re.M)
+if not re.search(r"^read = ", t, re.M):
+    m = re.search(r"^(?:shell|write) = \[.*\]\n", t, re.M)
+    assert m, "the cell's team has no grant line to anchor the read grant"
+    t = t[:m.end()] + f'read = ["{sys.argv[2]}"]\n' + t[m.end():]
+p.write_text(t, encoding="utf-8")
+PY
+      cat > "$PROG/charter.toml" <<TOML
+schema = 1
+name = "cell"
+
+[reach]
+read = ["$RD_DATASET/x"]
+TOML
+      RD_ADAPTERS="$D/read-adapters"; mkdir -p "$RD_ADAPTERS"
+      python3 - "$MANIFEST" "$CC_BYPASS_ADAPTERS/claude-code.toml" "$ADAPTER" "$RD_ADAPTERS/$ADAPTER.toml" <<'PY'
+import pathlib, re, sys
+stock, bypass, adapter, out = sys.argv[1:5]
+src = pathlib.Path(bypass if adapter == "claude-code" and pathlib.Path(bypass).is_file() else stock)
+text = src.read_text(encoding="utf-8")
+line = re.search(r'^tested_classes = \[.*\]$', text, re.M)
+assert line, "no tested line in the manifest"
+if '"read"' not in line.group(0):
+    # the manifest doesn't claim the class yet: this cell is what would earn it
+    text = text.replace(line.group(0), line.group(0)[:-1] + ', "read"]', 1)
+pathlib.Path(out).write_text(text, encoding="utf-8")
+PY
+      emit_shell "\"cat $RD_DATASET/x/data.txt > src/read-ok.txt\"" > "$D/tool.json"
+      OPERATOR_ADAPTERS="$RD_ADAPTERS" engine_cell_run rd-in-dir src || { cleanup_daemons; exit 1; }
+      [ "$(cat "$ADIR/repo/src/read-ok.txt" 2>/dev/null)" = "READ-BODY-4b7a" ] \
+        || { echo "  read-allowed: FAIL (the seat didn't read inside its directory: $(head -c 120 "$ADIR/repo/src/read-ok.txt" 2>/dev/null))"; cleanup_daemons; exit 1; }
+      for twin in "parent:$RD_DATASET/outside.txt" "sibling:$RD_DATASET/x2/outside.txt" \
+                  "dotdot:$RD_DATASET/x/../outside.txt" "link:$RD_DATASET/x/link-out"; do
+        name=${twin%%:*}; path=${twin#*:}
+        emit_shell "\"cat $path > src/read-$name.txt 2>&1 || true\"" > "$D/tool.json"
+        OPERATOR_ADAPTERS="$RD_ADAPTERS" engine_cell_run "rd-outside-$name" src || { cleanup_daemons; exit 1; }
+        grep -q "OUTSIDE" "$ADIR/repo/src/read-$name.txt" 2>/dev/null \
+          && { echo "  read-allowed: FAIL (the seat read outside its directory: $name)"; cleanup_daemons; exit 1; }
+        grep -qiE "no such file|not permitted|denied|error|failed" "$ADIR/repo/src/read-$name.txt" 2>/dev/null \
+          || { echo "  read-allowed: FAIL (no refusal receipt for the $name twin: $(head -c 160 "$ADIR/repo/src/read-$name.txt" 2>/dev/null))"; cleanup_daemons; exit 1; }
+      done
+      echo "  read-allowed: pass (the seat reads inside the directory the charter lists, read-only at its own path; the directory above, a sibling, \`..\` and a link out are unreachable)"
       ;;
   esac
 done
