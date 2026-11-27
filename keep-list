@@ -100,10 +100,13 @@ scripts/release-lint.py
 scripts/run-all-selftests.sh
 scripts/run-first-level-selftests.sh
 scripts/setup-hooks.sh
+scripts/verify-ci-pins.py
 scripts/verify-rekor.py
 test/canary-walk.sh
 test/citation-seal-check.sh
 test/cleanroom.sh
+test/cli-pins/package-lock.json
+test/cli-pins/package.json
 test/conformance.sh
 test/fence-placement.sh
 test/forge/hollow.py

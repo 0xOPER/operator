@@ -1,0 +1,10 @@
+{
+  "name": "operator-cli-pins",
+  "private": true,
+  "description": "CI pins: the vendor coding CLIs the conformance and proof suites run at their manifest versions. Installed only with: npm ci --ignore-scripts",
+  "dependencies": {
+    "@anthropic-ai/claude-code": "2.1.318",
+    "@openai/codex": "0.166.0",
+    "opencode-ai": "1.19.5"
+  }
+}

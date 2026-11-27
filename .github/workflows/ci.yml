@@ -76,6 +76,10 @@ jobs:
         run: scripts/release-lint.py
       - name: Release lint selftest
         run: scripts/release-lint.py --selftest
+      - name: What CI installs is pinned by hash
+        run: |
+          scripts/verify-ci-pins.py
+          scripts/verify-ci-pins.py --selftest
       - name: No unlisted file, no link
         run: |
           set -o pipefail
@@ -164,15 +168,31 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install bubblewrap and pinned CLIs
+      - name: Install bubblewrap
         run: |
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           sudo apt-get update -qq
           sudo apt-get install -y -qq bubblewrap
-          sudo npm install -g --no-fund --no-audit @anthropic-ai/claude-code@2.1.318 @openai/codex@0.166.0 opencode-ai@1.19.5
+      - name: Install the pinned CLIs from the lockfile, by hash, as the runner's user
+        working-directory: test/cli-pins
+        run: |
+          # every tarball by the sha512 the committed lockfile names, and no package script.
+          # What the vendors' postinstalls do -- stand the linux-x64 binary at the
+          # wrapper's bin -- is done here by link; two of them also run the binary,
+          # or install by version when that fails, which is what the hash rules out
+          npm ci --ignore-scripts --no-fund --no-audit
+          p="$RUNNER_TEMP/cli"
+          mkdir -p "$p/bin"
+          mv node_modules "$p/"
+          ln -s ../node_modules/@anthropic-ai/claude-code-linux-x64/claude "$p/bin/claude"
+          ln -s ../node_modules/@openai/codex/bin/codex.js "$p/bin/codex"
+          ln -s ../node_modules/opencode-linux-x64/bin/opencode "$p/bin/opencode"
+          # the prefix is laid out like an nvm prefix because the jail binds it as
+          # /opt/cli and sees nothing else of the runner: codex's launcher needs node
+          cp -L "$(command -v node)" "$p/bin/node"
+          echo "OPERATOR_CLI_DIR=$p" >> "$GITHUB_ENV"
       - name: Conformance cells and live fence placement (the pins)
         run: |
-          export OPERATOR_CLI_DIR="$(npm prefix -g)"
           test/conformance.sh --selftest
           test/conformance.sh --matrix
           test/conformance.sh claude-code write-outside another-seat push-bare net-denied net-allowed shell-allowed
