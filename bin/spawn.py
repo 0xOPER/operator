@@ -1510,9 +1510,49 @@ def ro_binds(attempt, meta):
     return [x for p in paths for x in ("--ro-bind", p, p)]
 
 
+def clone_for(attempt, meta):
+    """Whether this attempt's worker may write its repository's .git: the writable
+    clone (docs/charter.md section 5). A shell-class feature, asked for by the
+    seat's shell grant (the key is declarative: no shipped adapter keeps a
+    per-command law) and earned per adapter: the adapter's manifest must prove the
+    class (tested_classes, behind the shell-allowed and clone-allowed cells).
+    Both are held here, where the jail is built, from the ruled team and the
+    engine's own manifest; the attempt's meta opens nothing by itself (it only
+    says the seat asked where the attempt was built, which spares every other
+    seat the team's loading). A seat that does not ask gets the read-only .git
+    it always had, and so does one whose adapter has not earned the class."""
+    if not meta.get("shell"):
+        return False
+    try:
+        prog = meta.get("prog")
+        _, seats, _ = load_team(prog) if prog else (None, {}, None)
+        seat = seats.get(meta.get("seat")) or {}
+        if not seat.get("shell"):
+            return False
+        return "shell" in (adapter_manifest(seat.get("adapter") or "stub")
+                           .get("tested_classes") or [])
+    except (Void, Refused, ValueError):
+        return False
+
+
+def repo_binds(attempt, meta, repo_rw=True):
+    """The worker's repository and its .git. With the clone the repository binds
+    once, read-write, .git with it: the worker branches in it and adds worktrees.
+    Without it, .git is its own read-only bind. The clone is the worker's own to
+    write, and nothing else's: no git that honours its config runs outside the
+    worker's jail (GIT_FUNCTIONS; the seal stages the work tree into a git
+    directory of its own), so what a worker plants there fires only where the
+    worker already runs everything, and it is never delivered. A review turn's
+    repository is read-only whole, clone or not."""
+    if not (repo_rw and clone_for(attempt, meta)):
+        return [(("--bind" if repo_rw else "--ro-bind"), os.path.join(attempt, "repo"), "/w/repo"),
+                ("--ro-bind", os.path.join(attempt, "repo", ".git"), "/w/repo/.git")]
+    return [("--bind", os.path.join(attempt, "repo"), "/w/repo")]
+
+
 def jail_binds_for(attempt, etc_dir, repo_rw=True):
-    binds = [(("--bind" if repo_rw else "--ro-bind"), os.path.join(attempt, "repo"), "/w/repo"),
-             ("--ro-bind", os.path.join(attempt, "repo", ".git"), "/w/repo/.git"),
+    meta = meta_load(attempt)
+    binds = repo_binds(attempt, meta, repo_rw) + [
              ("--bind", os.path.join(attempt, "out"), "/w/out"),
              ("--bind", os.path.join(attempt, "home"), "/w/home"),
              ("--ro-bind", os.path.join(attempt, "compiled"), "/w/compiled")]
@@ -1525,7 +1565,6 @@ def jail_binds_for(attempt, etc_dir, repo_rw=True):
     # gpu nodes (or the named refusal), the seat's ro data paths (the rule of
     # two beside a network grant asked here, as the read class asks it), and
     # its read directories (the read class, its law held again here)
-    meta = meta_load(attempt)
     flat += seat_gpu_binds(meta)
     flat += ro_binds(attempt, meta)
     flat += read_binds(attempt, meta)
@@ -1652,7 +1691,8 @@ def egress_wrapper(next_script):
 
 
 def worker_argv(attempt, cmd, etc_dir, nproc=NPROC):
-    """The worker jail: repo rw, .git ro, out and home rw, compiled ro, generated
+    """The worker jail: repo rw (.git its own read-only bind, unless the seat's
+    clone opens it: repo_binds), out and home rw, compiled ro, generated
     identifiers over a bare /etc, prlimit nproc inside, fsize and core outside."""
     meta = meta_load(attempt)
     setenvs = (("HOME", "/w/home"), ("PATH", "/usr/bin:/bin"),
@@ -5028,6 +5068,117 @@ def selftest():
               f"R-ro ro and read beside network: the one waiver covers both: {str(r_jail)[:120]}")
         shutil.rmtree(rd_ds, ignore_errors=True)
 
+        # S-clone the writable clone (M2): asked for by the seat's shell grant and
+        # earned by the adapter's manifest, both held again where the jail is
+        # built; the worker's jail only. A seat that does not ask keeps the
+        # read-only .git it always had
+        cl_adapters = os.path.join(base, "clone-adapters")
+        os.makedirs(cl_adapters, exist_ok=True)
+        for nm_c, classes_c in (("proven", ["write", "shell"]), ("unproven", ["write"])):
+            with open(os.path.join(cl_adapters, nm_c + ".toml"), "w") as f:
+                f.write(f'schema = 2\nname = "{nm_c}"\ntested_classes = {classes_c}\nargv = ["true"]\n')
+        keep_cl = os.environ.get("OPERATOR_ADAPTERS")
+        os.environ["OPERATOR_ADAPTERS"] = cl_adapters   # the door reads it when the jail is built
+        try:
+            clones = {}
+            for key_c, extra_c, adapter_c in (("quiet", "", "proven"), ("earned", 'shell = ["*"]\n', "proven"),
+                                              ("unearned", 'shell = ["*"]\n', "unproven"),
+                                              ("nomanifest", 'shell = ["*"]\n', "nothing-ships-this"),
+                                              ("dotgit", 'shell = ["*"]\n', "proven")):
+                prog_c = _program(home, f"p-clone-{key_c}",
+                                  team_body='schema = 1\nname = "t"\nmax_parallel = 1\n[seat.w]\n'
+                                            'role = "roles/w.md"\n'
+                                            f'adapter = "{adapter_c}"\nwrite = ["src/**"]\n{extra_c}')
+                rd_c, _, _ = _world(home, f"w-clone-{key_c}", {"src/a.py": "v=1\n"})
+                # the last seat asks to deliver its own .git: a legal grant
+                grants_c = [".git/**", "src/**"] if key_c == "dotgit" else ["src/**"]
+                clones[key_c] = build_attempt(rd_c, "w", grants_c, "integration/R", f"clone-{key_c}",
+                                              "r1", prog_c, ["w", "r"])
+
+            def repo_flag(adir, repo_rw=True):
+                """The jail's binds for the repository and its .git: (flag, source) pairs."""
+                flat = jail_binds_for(adir, os.path.join(base, "no-etc"), repo_rw=repo_rw)
+                return [(flat[k], flat[k + 1]) for k in range(0, len(flat) - 2, 3)
+                        if flat[k + 1].endswith("/repo") or flat[k + 1].endswith("/repo/.git")]
+
+            def as_yesterday(adir):
+                r_c = os.path.join(adir, "repo")
+                return [("--bind", r_c), ("--ro-bind", os.path.join(r_c, ".git"))]
+
+            check(repo_flag(clones["quiet"]) == as_yesterday(clones["quiet"]),
+                  "S-clone a seat that does not ask keeps the read-only .git")
+            check(repo_flag(clones["earned"]) == [("--bind", os.path.join(clones["earned"], "repo"))],
+                  f"S-clone shell on an adapter that earned the class: the repository binds once, "
+                  f".git with it: {repo_flag(clones['earned'])}")
+            for key_c, label_c in (("unearned", "an adapter that has not earned the class"),
+                                   ("nomanifest", "an adapter with no manifest")):
+                check(repo_flag(clones[key_c]) == as_yesterday(clones[key_c]),
+                      f"S-clone shell on {label_c}: no clone, the jail as yesterday")
+            r_c = os.path.join(clones["earned"], "repo")
+            check(repo_flag(clones["earned"], repo_rw=False) ==
+                  [("--ro-bind", r_c), ("--ro-bind", os.path.join(r_c, ".git"))],
+                  "S-clone a review turn's repository is read-only whole, clone or not")
+            meta_q = meta_load(clones["quiet"])
+            _dump_meta(clones["quiet"], {**meta_q, "shell": ["*"]})
+            check(repo_flag(clones["quiet"]) == as_yesterday(clones["quiet"]),
+                  "S-clone the meta's word alone opens nothing: the ruled seat asks")
+            _dump_meta(clones["quiet"], meta_q)
+            # never delivered, under the grant that asks for it: what the worker
+            # puts into its .git -- a branch holding a blob no work tree shows, a
+            # hook, a config command -- stays there. The seal stages the work
+            # tree into a git directory of its own (_seal_room is its room-safe
+            # twin), and git matches no path inside a work tree's .git. So the
+            # delivered tree holds no .git path and the parent never learns the
+            # side branch. The fixture's own git makes the branch first; from the
+            # moment the plants are in, no git of this host may run in the clone
+            # until the control does, on purpose
+            a_cl = clones["dotgit"]
+            r_ap = os.path.join(a_cl, "repo")
+            fired_cl = os.path.join(base, "clone-fired")
+            blob_cl = subprocess.run(["git", "-C", r_ap, "hash-object", "-w", "--stdin"],
+                                     input="SIDE-BRANCH-ONLY-7e2\n", capture_output=True, text=True,
+                                     env=engine_env()).stdout.strip()
+            tree_cl = subprocess.run(["git", "-C", r_ap, "mktree"],
+                                     input=f"100644 blob {blob_cl}\tside-only.txt\n", capture_output=True,
+                                     text=True, env=engine_env()).stdout.strip()
+            side_cl = egit(r_ap, "commit-tree", tree_cl, "-m", "side", commit=True).strip()
+            subprocess.run(["git", "-C", r_ap, "update-ref", "refs/heads/side", side_cl],
+                           capture_output=True, env=engine_env(), check=True)
+            with open(os.path.join(r_ap, "src", "a.py"), "w") as f:
+                f.write("v=2\n")
+            hook_cl = os.path.join(r_ap, ".git", "hooks", "post-index-change")
+            with open(hook_cl, "w") as f:
+                f.write(f"#!/bin/sh\ntouch {fired_cl}\n")
+            os.chmod(hook_cl, 0o755)
+            with open(os.path.join(r_ap, ".git", "config"), "a") as f:
+                f.write(f"\n[core]\n\tfsmonitor = sh -c 'touch {fired_cl}'\n")
+            with contextlib_redirect():
+                _seal_room(a_cl)
+            sealed_cl = not os.path.exists(fired_cl)
+            gate_cl = import_gate(a_cl)[0]
+            check(sealed_cl and not os.path.exists(fired_cl),
+                  "S-clone the room-safe seal and the gate run no git of the clone's")
+            check(gate_cl == "OK", f"S-clone the work tree delivers through the gate: {gate_cl}")
+            deliv_cl = egit(parent_of(a_cl), "ls-tree", "-r", "--name-only",
+                            "refs/attempts/clone-dotgit").split()
+            check("src/a.py" in deliv_cl and not any(p == ".git" or p.startswith(".git/") for p in deliv_cl),
+                  f"S-clone the delivered tree holds the work and no .git path, under the grant "
+                  f"that asks for it: {deliv_cl}")
+            has_side, _ = egit_ok(parent_of(a_cl), "cat-file", "-e", f"{side_cl}^{{commit}}")
+            has_blob, _ = egit_ok(parent_of(a_cl), "cat-file", "-e", blob_cl)
+            check(not has_side and not has_blob,
+                  "S-clone the parent never learns the clone's side branch or its blob")
+            subprocess.run(["git", "-C", r_ap, "add", "-A"], capture_output=True, env=engine_env())
+            check(os.path.exists(fired_cl),
+                  "S-clone the control: git run in the clone on this host fires its plants")
+            if os.path.exists(fired_cl):
+                os.unlink(fired_cl)
+        finally:
+            if keep_cl is None:
+                os.environ.pop("OPERATOR_ADAPTERS", None)
+            else:
+                os.environ["OPERATOR_ADAPTERS"] = keep_cl
+
         print(f"selftest: OK ({ok[0]} checks)" if ok[0] and not bad[0] else "selftest: FAIL")
         return 0 if ok[0] and not bad[0] else 1
     finally:
@@ -5495,6 +5646,85 @@ def first_level():
         t = out(a)
         check("ADD-OK" not in t and "CFG-OK" not in t and "GIT-KEPT" in t,
               f"A read-only .git: {t[:200]}")
+
+        # S-clone the writable clone in a real jail (M2): a seat that asks
+        # (shell) on an adapter that earned the class writes its .git from
+        # inside the jail -- a branch, a worktree of its own, a side branch
+        # holding a blob no work tree shows, and the plant zoo -- and delivers
+        # its work tree through the real seal and the gate. Nothing fires on
+        # the host, no .git path is delivered, and the parent never learns the
+        # side branch. The same turn in yesterday's jail (no shell grant)
+        # cannot write .git at all. The plants go in last: a planted
+        # reference-transaction hook that cannot write its marker would abort
+        # the worker's own ref updates inside the jail
+        fl_adapters = os.path.join(base, "clone-adapters")
+        os.makedirs(fl_adapters, exist_ok=True)
+        with open(os.path.join(fl_adapters, "proven.toml"), "w") as f:
+            f.write('schema = 2\nname = "proven"\ntested_classes = ["write", "shell"]\nargv = ["true"]\n')
+        keep_fl = os.environ.get("OPERATOR_ADAPTERS")
+        os.environ["OPERATOR_ADAPTERS"] = fl_adapters   # the door reads it when the jail is built
+        try:
+            def clone_attempt_fl(aid, extra):
+                prog_fl = _program(home, f"fl-clone-{aid}", team_body=
+                                   'schema = 1\nname = "t"\nmax_parallel = 1\n[seat.w]\n'
+                                   'role = "roles/w.md"\nadapter = "proven"\nwrite = ["src/**"]\n'
+                                   + extra)
+                return build_attempt(rd, "w", ["src/**"], "integration/R", aid, None, prog_fl, ["w", "r"])
+
+            a_yes = clone_attempt_fl("a-clone-yes", 'shell = ["*"]\n')
+            a_no = clone_attempt_fl("a-clone-no", "")
+            marks = os.path.join(base, "clone-host")
+            os.makedirs(marks, exist_ok=True)
+            with open(os.path.join(ROOT, "test", "lib", "plant-hooks.sh"), encoding="utf-8") as f:
+                zoo_fl = f.read()
+            turn_fl = ("set -eu\n"
+                       'git checkout -q -b feature/x && echo BRANCH-OK\n'
+                       'git worktree add -q -b wt "$HOME/wt" 2>/dev/null && [ -f "$HOME/wt/.git" ] '
+                       '&& echo WORKTREE-OK\n'
+                       'echo "SIDE-BRANCH-ONLY-4d8b" > "$HOME/side.txt"\n'
+                       'b=$(git hash-object -w "$HOME/side.txt")\n'
+                       't=$(printf "100644 blob %s\\tside-only.txt\\n" "$b" | git mktree)\n'
+                       'c=$(git -c user.email=a@x -c user.name=a commit-tree "$t" -m side)\n'
+                       'git update-ref refs/heads/side "$c" && echo "$c" > src/side-sha.txt\n'
+                       'echo clone-ok-6f21 > src/clone-ok.txt\n'
+                       + zoo_fl)
+            worker(a_yes, ["/bin/sh", "-c", turn_fl, "sh", ".", marks])
+            t = out(a_yes)
+            check("BRANCH-OK" in t and "WORKTREE-OK" in t,
+                  f"S-clone in the jail: the worker branches and adds a worktree of its own: {t[-300:]}")
+            worker(a_no, ["/bin/sh", "-c", turn_fl, "sh", ".", marks])
+            t = out(a_no)
+            check("BRANCH-OK" not in t and "WORKTREE-OK" not in t,
+                  f"S-clone the same turn in yesterday's jail (no shell grant) cannot write .git: {t[-300:]}")
+            for m_fl in ("HOOK-RAN", "CFG-RAN"):
+                check(not os.path.exists(os.path.join(marks, m_fl)),
+                      f"S-clone no {m_fl} on the host after the two turns")
+            check(seal(a_yes) == "sealed", "S-clone the clone's work tree seals through the real seal jail")
+            check(import_gate(a_yes)[0] == "OK", "S-clone the clone's work tree passes the gate")
+            for m_fl in ("HOOK-RAN", "CFG-RAN"):
+                check(not os.path.exists(os.path.join(marks, m_fl)),
+                      f"S-clone no {m_fl} on the host after the seal and the gate")
+            tree_fl = egit(parent, "ls-tree", "-r", "--name-only", "refs/attempts/a-clone-yes").split()
+            check("src/clone-ok.txt" in tree_fl and not any(p == ".git" or p.startswith(".git/") for p in tree_fl),
+                  f"S-clone the delivered tree holds the work and no .git path: {tree_fl}")
+            with open(os.path.join(a_yes, "repo", "src", "side-sha.txt"), encoding="utf-8") as f:
+                side_fl = f.read().strip()
+            has_side_fl = re.fullmatch(r"[0-9a-f]{40}", side_fl) and \
+                egit_ok(parent, "cat-file", "-e", f"{side_fl}^{{commit}}")[0]
+            check(bool(side_fl) and not has_side_fl,
+                  "S-clone the parent never learns the side branch the worker committed in the clone")
+            for m_fl in ("HOOK-RAN", "CFG-RAN"):
+                check(not os.path.exists(os.path.join(marks, m_fl)),
+                      f"S-clone no {m_fl} on the host after the control's own reads")
+            subprocess.run(["git", "-C", os.path.join(a_yes, "repo"), "add", "-A"], capture_output=True)
+            check(all(os.path.exists(os.path.join(marks, m_fl)) for m_fl in ("HOOK-RAN", "CFG-RAN")),
+                  "S-clone the control: the plants the worker wrote from its jail are live where git "
+                  "runs in the clone on this host")
+        finally:
+            if keep_fl is None:
+                os.environ.pop("OPERATOR_ADAPTERS", None)
+            else:
+                os.environ["OPERATOR_ADAPTERS"] = keep_fl
         worker(a, ["/bin/sh", "-c",
                    'echo y > /tmp/t; echo "t=$?"; echo z > /dev/shm/s; echo "s=$?"; '
                    'echo o > /w/out/o; echo "o=$?"; echo h > "$HOME/h"; echo "h=$?"; '

@@ -341,8 +341,8 @@ NEUTERS = [
      "text = data.decode('utf-8', 'replace')"),
     ("RN-status-unfired", "bin/run.py", 'state = "unfired"', 'state = run.get("state", "running")'),
     # spawn.py: the jail arms (first level)
-    ("SP-jail-git-ro", SP, '("--ro-bind", os.path.join(attempt, "repo", ".git"), "/w/repo/.git"),',
-     '("--bind", os.path.join(attempt, "repo", ".git"), "/w/repo/.git"),', SPF),
+    ("SP-jail-git-ro", SP, '("--ro-bind", os.path.join(attempt, "repo", ".git"), "/w/repo/.git")]',
+     '("--bind", os.path.join(attempt, "repo", ".git"), "/w/repo/.git")]', SPF),
     ("SP-jail-nproc", SP, '["prlimit", f"--nproc={nproc}", f"--as={as_cap()}", *cmd])',
      '["prlimit", f"--as={as_cap()}", *cmd])', SPF),
     ("SP-jail-fsize", SP, 'return (["prlimit", f"--fsize={FSIZE}", "--core=0"] +',
@@ -2049,4 +2049,33 @@ NEUTERS = [
     ('TM-ro-two', 'bin/team.py',
      '    return [g for g in ("read", "ro") if seat.get(g)] if seat.get("network") else []\n',
      '    return [g for g in ("read",) if seat.get(g)] if seat.get("network") else []\n'),
+
+    # --- the writable clone (M2): a shell seat's .git is its own to write, where
+    # the jail is built and only there. Asked for by the ruled seat's shell grant
+    # and earned by the adapter's manifest, both held again at the door; a review
+    # turn's repository is read-only whole. Nothing a worker plants in the clone
+    # reaches the host, by structure: no git of the engine's runs in the attempt
+    # after the build (the rows above), and the seal stages the work tree into a
+    # git directory of its own (SP-seal-own-gitdir), which never delivers .git ---
+    ('SP-clone-ask', 'bin/spawn.py',
+     '        if not seat.get("shell"):\n            return False\n',
+     '        if False:\n            return False\n'),
+    ('SP-clone-earned', 'bin/spawn.py',
+     '        return "shell" in (adapter_manifest(seat.get("adapter") or "stub")\n'
+     '                           .get("tested_classes") or [])\n',
+     '        return True\n'),
+    ('SP-clone-ruled', 'bin/spawn.py',
+     '        seat = seats.get(meta.get("seat")) or {}\n',
+     '        seat = seats.get(meta.get("seat")) or {}\n'
+     '        if meta.get("shell"):\n'
+     '            seat = {**seat, "shell": meta["shell"]}\n'),
+    ('SP-clone-review', 'bin/spawn.py',
+     '    if not (repo_rw and clone_for(attempt, meta)):\n',
+     '    if not clone_for(attempt, meta):\n'),
+    ('SP-clone-bind', 'bin/spawn.py',
+     '    return [("--bind", os.path.join(attempt, "repo"), "/w/repo")]\n',
+     '    return [("--ro-bind", os.path.join(attempt, "repo"), "/w/repo")]\n'),
+    ('SP-seal-own-gitdir', 'bin/spawn.py',
+     'export GIT_DIR=/seal/.swork/.git GIT_WORK_TREE=/w/repo\n',
+     'export GIT_WORK_TREE=/w/repo\n', SPF),
 ]
