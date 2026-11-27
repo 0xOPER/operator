@@ -5,6 +5,7 @@ All notable changes to OPERATOR are documented in this file.
 ## Unreleased (`main`)
 
 ### Fixes
+- The push gate no longer hands its repository to what it runs. Git passes a hook its repository as `GIT_DIR`; inside a linked worktree that is an absolute path, and `scripts/release-lint.py --selftest` builds a scratch repository with `git init`, which re-initialised the pushed repository instead: the scratch commits landed on the branch being pushed and the repository was turned bare. It worked from a main clone only because `GIT_DIR=.git` is relative there. The gate now unsets the discovery variables after it changes to the tree, the lint's own git calls take an environment without them, the lint selftest proves its scratch repository is its own under a caller's `GIT_DIR`, and the hooks selftest pushes from a linked worktree. Rows `HK-prepush-gitdir` and `RL-scratch-hermetic`.
 - `bin/review.py`: both selftest suites now report a failure (exit 1) when an arm crashes with VOID after an earlier arm already recorded a failure. A break that lets a forged verdict deliver moves the fixture out from under the arms after it; the suite used to exit 2 and forget the failure it had printed, which is why the ratchet reported four review rows as VOID. The truncated-pack arm also records a pack that got past the guard, whatever the unguarded path dies of afterwards.
 - `test/neuter.py`: a row that does not die prints the last lines of the mutated test's output, so a VOID or a survivor can be told apart from an environment that broke the test.
 

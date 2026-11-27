@@ -31,6 +31,21 @@ TIER_A_MIN = 11
 TIER_B_MIN = 17
 TIER_A = "test/lint/tier-a.tsv"
 PRIVATE_LIST = "keep-list.private"
+
+# What a hook hands its children: its own repository. A git call that means some
+# other repository (the scratch one the selftest builds, or the tree the git mode
+# reads) must not inherit it: under an absolute GIT_DIR, `git -C elsewhere init`
+# re-initialises the caller's repository instead, and turns it bare.
+GIT_DISCOVERY = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+                 "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE",
+                 "GIT_CEILING_DIRECTORIES", "GIT_PREFIX", "GIT_IMPLICIT_WORK_TREE")
+
+
+def git_env():
+    """The environment for a git call that must find its repository by its
+    working directory, and nowhere else."""
+    return {k: v for k, v in os.environ.items() if k not in GIT_DISCOVERY}
+
 CREDENTIAL_NAME = re.compile(
     r"(?:^|/)\.(?:ssh|aws|kube|docker|gnupg|claude|codex)/|(?:^|/)\.config/gh/"
     r"|(?:^|/)(?:[^/]*_(?:rsa|dsa|ecdsa|ed25519)[^/]*|\.env(?:\..+)?|[^/]+\.env|env\.(?:local|prod\w*|staging|dev\w*|test)|\.envrc|\.netrc|\.npmrc|\.pypirc|\.pgpass|\.my\.cnf|\.dockercfg|\.vault-token"
@@ -236,19 +251,38 @@ def selftest(tiers):
             tb.write_text("")
             check(cli("--root", str(root), "--tier-b", str(tb)).returncode == 2, "CLI empty tier B is rc 2")
             # Git mode reads HEAD, not the working copy. The working copy lies by being clean.
-            g = pathlib.Path(e, "g")
-            g.mkdir()
-            (g / "leak.txt").write_text(sample + "\n")
-            for a in (("init", "-q"), ("add", "-A"), ("commit", "-qm", "x")):
-                subprocess.run(["git", "-C", str(g), "-c", "user.email=t@example.invalid", "-c", "user.name=t", "-c", "commit.gpgsign=false", *a],
-                               capture_output=True)
+            # A hook would hand this process its own repository as GIT_DIR: stand one up and
+            # point the variable at it, so the scratch repository is proven to be its own.
+            decoy = pathlib.Path(e, "decoy")
+            decoy.mkdir()
+            held = {k: os.environ.get(k) for k in GIT_DISCOVERY}
+            subprocess.run(["git", "-C", str(decoy), "init", "-q"], capture_output=True, env=git_env())
+            os.environ["GIT_DIR"] = str(decoy / ".git")
+            try:
+                g = pathlib.Path(e, "g")
+                g.mkdir()
+                (g / "leak.txt").write_text(sample + "\n")
+                scratch = ["git", "-C", str(g), "-c", "user.email=t@example.invalid", "-c", "user.name=t",
+                           "-c", "commit.gpgsign=false"]
+                for a in (("init", "-q"), ("add", "-A"), ("commit", "-qm", "x")):
+                    subprocess.run([*scratch, *a], capture_output=True, env=git_env())
+                own = subprocess.run(["git", "-C", str(g), "log", "--format=%s"], capture_output=True, text=True, env=git_env())
+                stray = subprocess.run(["git", "-C", str(decoy), "log", "--format=%s"], capture_output=True, text=True, env=git_env())
+                check(own.returncode == 0 and own.stdout.splitlines() == ["x"] and stray.returncode != 0,
+                      f"the scratch repository is its own under a caller's GIT_DIR: own={own.stdout!r} stray={stray.stdout!r}")
+            finally:
+                for k, v in held.items():
+                    if v is None:
+                        os.environ.pop(k, None)
+                    else:
+                        os.environ[k] = v
             (g / "leak.txt").write_text("clean\n")
             r = cli("--root", str(g))
             check(r.returncode == 1 and "HIT" in r.stdout and "head=" in r.stdout, "git mode reads HEAD and names it")
             (g / ".gitattributes").write_text("leak.txt export-ignore\n")
             for a in (("add", "-A"), ("commit", "-qm", "y")):
                 subprocess.run(["git", "-C", str(g), "-c", "user.email=t@example.invalid", "-c", "user.name=t", "-c", "commit.gpgsign=false", *a],
-                               capture_output=True)
+                               capture_output=True, env=git_env())
             check(cli("--root", str(g)).returncode == 2, "git mode refuses a tracked file the archive drops")
             # A tier A sample that holds a tier B name is refused at load.
             s0 = tiers[0][1][0][2]
@@ -320,13 +354,13 @@ def main():
     # A git tree is judged by what its HEAD ships, not by the working copy.
     with tempfile.TemporaryDirectory() as t:
         if (root / ".git").exists():
-            sha = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True, text=True)
-            arc = subprocess.run(["git", "-C", str(root), "archive", sha.stdout.strip()], capture_output=True)
+            sha = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True, text=True, env=git_env())
+            arc = subprocess.run(["git", "-C", str(root), "archive", sha.stdout.strip()], capture_output=True, env=git_env())
             if sha.returncode or arc.returncode or subprocess.run(["tar", "-x", "-C", t], input=arc.stdout).returncode:
                 print(f"release-lint: VOID -- can't export HEAD of {root}", file=sys.stderr)
                 return 2
             # An export-ignore line or a gitlink drops a tracked path from the archive.
-            ls = subprocess.run(["git", "-C", str(root), "ls-tree", "-r", "-z", "--name-only", sha.stdout.strip()], capture_output=True)
+            ls = subprocess.run(["git", "-C", str(root), "ls-tree", "-r", "-z", "--name-only", sha.stdout.strip()], capture_output=True, env=git_env())
             got = {x.relative_to(t).as_posix() for x in pathlib.Path(t).rglob("*") if x.is_file() or x.is_symlink()}
             if ls.returncode or set(filter(None, ls.stdout.decode(errors="surrogateescape").split("\0"))) != got:
                 print("release-lint: VOID -- HEAD tracks paths the archive doesn't hold (export-ignore or a gitlink)", file=sys.stderr)

@@ -49,6 +49,13 @@ ROOT=$(run_bounded 5 git rev-parse --show-toplevel 2>/dev/null) || {
 }
 cd "$ROOT" || exit 2
 
+# Git hands this gate its own repository as GIT_DIR (an absolute path inside a linked
+# worktree). Nothing the gate runs may inherit it: a selftest that builds a scratch
+# repository would `init` this one instead, commit onto the branch being pushed, and
+# turn the repository bare. From here on every git call finds the repository by its
+# working directory, which is what each of them means.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_NAMESPACE GIT_PREFIX
+
 ZERO="0000000000000000000000000000000000000000"
 WANT_ID='HashedViking <6432677+HashedViking@users.noreply.github.com>'
 

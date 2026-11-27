@@ -174,8 +174,54 @@ selftest() {
   out=$(wgit push -q origin main 2>&1); r=$?
   [ "$r" -eq 0 ] || { echo "FAIL 7c clean push after reset failed: rc=$r $out" >&2; rc=1; }
 
+  # 8. A push from a linked worktree. Git hands the gate that repository as an absolute
+  #    GIT_DIR, and nothing the gate runs may inherit it: a selftest that builds a scratch
+  #    repository would commit onto the branch being pushed and turn the repository bare.
+  #    A sentinel rides the pushed tree where the gate's Rekor step runs, and records what
+  #    its environment held.
+  cat > "$T/work/scripts/verify-rekor.py" <<'PY'
+#!/usr/bin/env python3
+# A stand-in for the Rekor check that reports the environment the push gate handed it.
+import os
+import sys
+
+out = os.environ.get("HOOK_SENTINEL_OUT")
+if out:
+    with open(out, "w") as f:
+        f.write("GIT_DIR=" + os.environ.get("GIT_DIR", "<unset>") + "\n")
+sys.exit(0)
+PY
+  chmod +x "$T/work/scripts/verify-rekor.py"
+  printf 'claims\n' > "$T/work/CLAIMS.md"
+  printf '{}\n' > "$T/work/claims-rekor.json"
+  printf 'none\n' > "$T/work/claims.pub"
+  printf 'CLAIMS.md\nclaims-rekor.json\nclaims.pub\nscripts/verify-rekor.py\n' >> "$T/work/keep-list"
+  LC_ALL=C sort -u -o "$T/work/keep-list" "$T/work/keep-list"
+  wgit add CLAIMS.md claims-rekor.json claims.pub scripts/verify-rekor.py keep-list
+  out=$(wgit commit -qm "a sentinel for the push gate's environment" 2>&1); r=$?
+  [ "$r" -eq 0 ] || { echo "FAIL 8a sentinel commit failed: rc=$r $out" >&2; rc=1; }
+  git -C "$T/work" worktree add -q -b topic "$T/topic" 2>/dev/null
+  printf 'from the linked worktree\n' > "$T/topic/note.txt"
+  out=$(PATH="$hook_path" OPERATOR_TIER_B=/nonexistent git -C "$T/topic" add note.txt 2>&1); r=$?
+  out=$(PATH="$hook_path" OPERATOR_TIER_B=/nonexistent git -C "$T/topic" commit -qm "a commit from a linked worktree" 2>&1); r=$?
+  [ "$r" -eq 0 ] || { echo "FAIL 8b commit in the linked worktree failed: rc=$r $out" >&2; rc=1; }
+  want=$(git -C "$T/topic" rev-parse HEAD)
+  out=$(HOOK_SENTINEL_OUT="$T/sentinel" PATH="$hook_path" OPERATOR_TIER_B=/nonexistent git -C "$T/topic" push -q origin topic 2>&1); r=$?
+  [ "$r" -eq 0 ] || { echo "FAIL 8c push from the linked worktree failed: rc=$r $out" >&2; rc=1; }
+  got=$(git -C "$T/topic" rev-parse HEAD)
+  [ "$got" = "$want" ] || { echo "FAIL 8d the push moved the worktree's branch: $want -> $got" >&2; rc=1; }
+  [ "$(git -C "$T/work" rev-parse topic)" = "$want" ] || { echo "FAIL 8e the push moved the branch another way" >&2; rc=1; }
+  [ "$(git -C "$T/work" config --get core.bare || echo false)" != "true" ] || {
+    echo "FAIL 8f the push turned the repository bare" >&2; rc=1
+  }
+  { [ -f "$T/sentinel" ] && grep -qx 'GIT_DIR=<unset>' "$T/sentinel"; } || {
+    echo "FAIL 8g the push gate handed its repository to what it ran: $(cat "$T/sentinel" 2>/dev/null)" >&2
+    rc=1
+  }
+  git -C "$T/work" worktree remove --force "$T/topic" 2>/dev/null
+
   if [ "$rc" -eq 0 ]; then
-    echo "selftest: OK (install, identity, keep-list, symlink, commit-msg, tier-a, syntax-svg, pre-push)"
+    echo "selftest: OK (install, identity, keep-list, symlink, commit-msg, tier-a, syntax-svg, pre-push, linked-worktree-push)"
   else
     echo "selftest: FAIL" >&2
   fi
