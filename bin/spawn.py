@@ -633,7 +633,7 @@ def build_attempt(rd, seat, grants, ref, aid, task, prog, seats):
     # walk's row -- visibility rode the write grant, so naming a tree visible
     # (a .github with a hundred files) meant widening DELIVERY. `see` names
     # paths for the checkout only; the tree check still gates on the grants.
-    see, gpu, ro, env, network, shell = [], False, [], [], [], []
+    see, gpu, ro, env, network, shell, read = [], False, [], [], [], [], []
     if prog:
         try:
             _, seats_doc, _ = load_team(prog)
@@ -646,6 +646,7 @@ def build_attempt(rd, seat, grants, ref, aid, task, prog, seats):
         env = list(seat_doc.get("env") or [])
         network = list(seat_doc.get("network") or [])
         shell = list(seat_doc.get("shell") or [])
+        read = list(seat_doc.get("read") or [])
     visible = grants + see
     stage_info = os.path.join(stage_repo, ".git", "info")
     os.makedirs(stage_info, exist_ok=True)
@@ -671,7 +672,7 @@ def build_attempt(rd, seat, grants, ref, aid, task, prog, seats):
     meta = {"id": aid, "seat": seat, "grants": grants, "see": see, "ref": ref,
             "start": start_sha, "task": task, "prog": prog,
             "seats": [x for x in (seats or []) if x],
-            "gpu": gpu, "ro": ro, "env": env, "network": network, "shell": shell,
+            "gpu": gpu, "ro": ro, "env": env, "network": network, "shell": shell, "read": read,
             "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     # a queued reply rides this attempt's mail, once: the pending note is
     # consumed here so a second reply re-pends instead of stacking silently
@@ -1434,6 +1435,47 @@ def seat_gpu_binds(meta):
     return [x for n in nodes for x in ("--dev-bind", n, n)]
 
 
+def read_binds(attempt, meta):
+    """The read class where every worker jail is built (docs/charter.md section 5).
+    Nothing in the attempt's meta is taken on trust: each path meets the stricter
+    path law again and is a directory on this host (bin/environment.py), and is
+    inside the charter's list (bin/reach.py). Beside a network grant the newest arm
+    ruling must carry the signed rule-of-two waiver (bin/review.py reads a ruling
+    the same way at its door): a worker that can read a host directory and talk to
+    the network can exfiltrate it. The binds are read-only, at each path's own
+    place. A refusal names its fix."""
+    paths = meta.get("read") or []
+    if not paths:
+        return []
+    prog = meta.get("prog")
+    if not prog:
+        raise Refused("the seat's read grant needs the program directory: the charter "
+                      "lists what it may read")
+    import environment as env_mod
+    import reach as reach_mod
+    import ruling as ruling_mod
+    for p in paths:
+        why = env_mod.read_refusal(p, env_mod.read_roots(prog)) if isinstance(p, str) \
+            else f"{p!r} is not a path"
+        if why is None and not os.path.isdir(p):
+            why = f"{p!r} isn't a directory on this host"
+        if why:
+            raise Refused(f"the seat's read grant names no directory this engine binds: {why}")
+    try:
+        reach_mod.check_read(prog, paths)
+    except (reach_mod.Finding, env_mod.Finding) as e:
+        raise Refused(f"the seat's read grant isn't inside the charter's directories: {e}")
+    if meta.get("network"):
+        arm = ruling_mod.newest(prog, "arm")
+        if arm is None or "rule-of-two" not in (arm[1].get("waivers") or []):
+            raise Refused(
+                f"seat {meta.get('seat')} holds a read grant beside a network grant: a worker "
+                "that can read a host directory and talk to the network can exfiltrate it, so "
+                "the owner signs that. Re-arm with the waiver (operator ruling sign <dir> "
+                "--kind arm --waive rule-of-two), or drop one of the two grants")
+    return [x for p in paths for x in ("--ro-bind", p, p)]
+
+
 def jail_binds_for(attempt, etc_dir, repo_rw=True):
     binds = [(("--bind" if repo_rw else "--ro-bind"), os.path.join(attempt, "repo"), "/w/repo"),
              ("--ro-bind", os.path.join(attempt, "repo", ".git"), "/w/repo/.git"),
@@ -1446,11 +1488,13 @@ def jail_binds_for(attempt, etc_dir, repo_rw=True):
     for f in ("passwd", "hosts", "machine-id", "hostname"):
         flat += ["--ro-bind", os.path.join(etc_dir, f), f"/etc/{f}"]
     # the seat's own flags reach every jail shape from this one place: the
-    # gpu nodes (or the named refusal), and the seat's ro data paths
+    # gpu nodes (or the named refusal), the seat's ro data paths, and its read
+    # directories (the read class, its law held again here)
     meta = meta_load(attempt)
     flat += seat_gpu_binds(meta)
     for r in meta.get("ro") or []:
         flat += ["--ro-bind", r, r]
+    flat += read_binds(attempt, meta)
     if meta.get("env"):
         # the seat's environment socket and its client. The socket exists only
         # while the door is up, so a jail is built after env_door() starts.
@@ -4672,6 +4716,93 @@ def selftest():
         check(nu_rc == 5 and nu_state.startswith("REFUSED non-utf8-path:") and not nu_ref_ok,
               f"Z6 non-UTF-8 path refused cleanly and attempt ref dropped: state={nu_state!r} rc={nu_rc}")
 
+        # R the read class (M2): the seat's read grant rides the attempt's meta
+        # from the ruled seat, and the jail builder takes nothing from the meta
+        # on trust -- where the jail is built, every path meets the law again,
+        # the charter must list it, and beside a network grant the newest arm
+        # ruling must carry the signed rule-of-two waiver
+        import ruling as ruling_mod
+        rd_ds = tempfile.mkdtemp(prefix="spawn-read.")       # a dataset on this host
+        rd_x = os.path.join(rd_ds, "x")
+        os.makedirs(rd_x)
+        with open(os.path.join(rd_x, "data.txt"), "w") as f:
+            f.write("READ-DATA\n")
+        os.symlink(rd_ds, os.path.join(rd_ds, "link"))
+        rd_adapters = os.path.join(base, "read-adapters")
+        os.makedirs(rd_adapters, exist_ok=True)
+        with open(os.path.join(rd_adapters, "stub.toml"), "w") as f:
+            f.write('schema = 2\nname = "stub"\ntested_classes = ["write", "read"]\nargv = ["true"]\n')
+        rd_prog = _program(home, "read-prog", team_body=
+                           'schema = 1\nname = "t"\nmax_parallel = 1\n[seat.w]\nrole = "roles/w.md"\n'
+                           'adapter = "stub"\nwrite = ["src/**"]\n'
+                           f'read = ["{rd_x}"]\n[seat.w.budget]\nusd = 12.0\n')
+        with open(os.path.join(rd_prog, "charter.toml"), "w") as f:
+            f.write('schema = 1\nname = "t"\n\n[reach]\n'
+                    f'read = ["{rd_x}"]\n')
+        keep_adapters = os.environ.get("OPERATOR_ADAPTERS")
+        os.environ["OPERATOR_ADAPTERS"] = rd_adapters
+        try:
+            rd_run, _, _ = _world(home, "read-run", {"src/a.py": "v=1\n"})
+            a_rd = build_attempt(rd_run, "w", ["src/**"], "integration/R", "read-1", "t1",
+                                 rd_prog, ["w", "r"])
+        finally:
+            if keep_adapters is None:
+                os.environ.pop("OPERATOR_ADAPTERS", None)
+            else:
+                os.environ["OPERATOR_ADAPTERS"] = keep_adapters
+        check(meta_load(a_rd).get("read") == [rd_x],
+              f"R the seat's read grant rides the attempt's meta: {meta_load(a_rd).get('read')}")
+        rd_argv = worker_argv(a_rd, ["/bin/sh", "-c", "true"], "/no-etc")
+        rd_i = rd_argv.index(rd_x) if rd_x in rd_argv else -1
+        check(rd_argv.count(rd_x) == 2 and rd_i > 0 and rd_argv[rd_i - 1] == "--ro-bind"
+              and rd_argv[rd_i + 1] == rd_x,
+              f"R the jail carries each read directory read-only, at its own path: "
+              f"{[a for a in rd_argv if 'spawn-read.' in a]}")
+
+        def read_jail(**fields):
+            """worker_argv for an attempt whose meta is exactly `fields`: the argv, or the refusal."""
+            ad = os.path.join(base, "read-meta")
+            os.makedirs(ad, exist_ok=True)
+            with open(os.path.join(ad, "attempt.json"), "w") as f:
+                json.dump({"id": "read-meta", "seat": "w", "grants": ["src/**"], "prog": rd_prog,
+                           **fields}, f)
+            try:
+                return worker_argv(ad, ["/bin/sh", "-c", "true"], "/no-etc")
+            except Refused as e:
+                return f"REFUSED {e}"
+
+        r_argv = read_jail(read=[rd_x])
+        check(r_argv.count(rd_x) == 2 and "REFUSED" not in str(r_argv),
+              f"R a listed directory binds with no ruling asked: {str(r_argv)[:120]}")
+        for fields, why, label in [
+            ({"read": [rd_ds]}, "isn't inside the charter's directories",
+             "R a directory the charter doesn't list refuses at the jail"),
+            ({"read": [os.path.join(rd_ds, "link", "x")]}, "has a link on its path",
+             "R a link on the path refuses at the jail"),
+            ({"read": [os.path.join(rd_ds, "absent")]}, "isn't a directory on this host",
+             "R a directory that isn't there refuses at the jail"),
+            ({"read": [42]}, "is not a path", "R anything but a path refuses"),
+            ({"read": [rd_x], "prog": None}, "needs the program directory",
+             "R a read grant with no program refuses"),
+            ({"read": [rd_x], "network": ["pypi.org"]}, "rule-of-two",
+             "R read beside network refuses without the signed waiver"),
+        ]:
+            r_jail = read_jail(**fields)
+            check(isinstance(r_jail, str) and r_jail.startswith("REFUSED") and why in r_jail,
+                  f"{label}: {str(r_jail)[:200]}")
+        with contextlib_redirect():
+            ruling_mod.sign(rd_prog, "arm", None, k)
+        r_jail = read_jail(read=[rd_x], network=["pypi.org"])
+        check(isinstance(r_jail, str) and "rule-of-two" in r_jail,
+              f"R an arm ruling signed without the waiver is no waiver: {str(r_jail)[:160]}")
+        with contextlib_redirect():
+            ruling_mod.sign(rd_prog, "arm", None, k, waivers=["rule-of-two"])
+        r_jail = read_jail(read=[rd_x], network=["pypi.org"])
+        check(r_jail.count(rd_x) == 2 and "REFUSED" not in str(r_jail),
+              f"R the signed waiver opens read beside network: {str(r_jail)[:120]}")
+        check(read_jail(read=[rd_x]) == r_jail, "R the same waiver leaves a read-only seat as it was")
+        shutil.rmtree(rd_ds, ignore_errors=True)
+
         print(f"selftest: OK ({ok[0]} checks)" if ok[0] and not bad[0] else "selftest: FAIL")
         return 0 if ok[0] and not bad[0] else 1
     finally:
@@ -5004,6 +5135,53 @@ def first_level():
                   "H8 the seat's ro data path crosses read-only at its own path")
             import shutil as _sh8b
             _sh8b.rmtree(h8models, ignore_errors=True)
+            # H8b the read class in a real jail (M2): a seat's read directory
+            # crosses read-only at its own path, and nothing beside it does --
+            # not the directory above, not a sibling, not through `..` or a link
+            fl_ds = tempfile.mkdtemp(prefix="fl-read.")
+            fl_x = os.path.join(fl_ds, "x")
+            os.makedirs(fl_x)
+            os.makedirs(os.path.join(fl_ds, "x2"))
+            for rel, text in (("x/data.txt", "H8B-READ-DATA\n"), ("outside.txt", "H8B-OUTSIDE\n"),
+                              ("x2/outside.txt", "H8B-OUTSIDE\n")):
+                with open(os.path.join(fl_ds, rel), "w") as f:
+                    f.write(text)
+            os.symlink(os.path.join(fl_ds, "outside.txt"), os.path.join(fl_x, "link-out"))
+            fl_adapters = os.path.join(base, "fl-read-adapters")
+            os.makedirs(fl_adapters, exist_ok=True)
+            with open(os.path.join(fl_adapters, "stub.toml"), "w") as f:
+                f.write('schema = 2\nname = "stub"\ntested_classes = ["write", "read"]\nargv = ["true"]\n')
+            prog_rd = _program(home, "h8bprog", team_body=
+                               'schema = 1\nname = "t"\nmax_parallel = 1\n'
+                               '[seat.w]\nrole = "roles/w.md"\nadapter = "stub"\n'
+                               f'write = ["src/**"]\nread = ["{fl_x}"]\n'
+                               '[seat.w.budget]\nusd = 12.0\n')
+            with open(os.path.join(prog_rd, "charter.toml"), "w") as f:
+                f.write('schema = 1\nname = "t"\n\n[reach]\n'
+                        f'read = ["{fl_x}"]\n')
+            keep_fl = os.environ.get("OPERATOR_ADAPTERS")
+            os.environ["OPERATOR_ADAPTERS"] = fl_adapters
+            try:
+                a_rd = build_attempt(rd, "w", ["src/**"], "integration/R",
+                                     "h8-read", "impl", prog_rd, ["w", "r"])
+            finally:
+                if keep_fl is None:
+                    os.environ.pop("OPERATOR_ADAPTERS", None)
+                else:
+                    os.environ["OPERATOR_ADAPTERS"] = keep_fl
+            worker(a_rd, ["/bin/sh", "-c",
+                          f"cat {fl_x}/data.txt; touch {fl_x}/w 2>/dev/null && echo WROTE-READ "
+                          "|| echo READ-ONLY-OK; "
+                          f"for p in {fl_ds}/outside.txt {fl_ds}/x2/outside.txt "
+                          f"{fl_x}/../outside.txt {fl_x}/link-out; do "
+                          'if [ -r "$p" ]; then echo "LEAK $(cat "$p")"; else echo ABSENT; fi; done'],
+                   timeout=120)
+            t_rd = out(a_rd)
+            check("H8B-READ-DATA" in t_rd and "READ-ONLY-OK" in t_rd and "WROTE-READ" not in t_rd
+                  and "LEAK" not in t_rd and t_rd.count("ABSENT") == 4,
+                  f"H8b the seat's read directory crosses read-only at its own path, and nothing "
+                  f"beside it: {t_rd[-300:]!r}")
+            _sh8b.rmtree(fl_ds, ignore_errors=True)
             # H9 an adapter may name its OWN broker (broker_env): the smart
             # reviewer rides one provider while the workers ride another --
             # the named socket binds into that adapter's attempts alone, and

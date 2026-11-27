@@ -1993,4 +1993,25 @@ NEUTERS = [
     ('TM-read-twice', 'bin/team.py',
      '            if len(set(reads)) != len(reads):\n',
      '            if False:\n'),
+    ('SP-read-meta', 'bin/spawn.py',
+     '        read = list(seat_doc.get("read") or [])\n',
+     '        read = []\n'),
+    ('SP-read-bind', 'bin/spawn.py',
+     '    flat += read_binds(attempt, meta)\n',
+     '    pass\n'),
+    ('SP-read-law', 'bin/spawn.py',
+     '        why = env_mod.read_refusal(p, env_mod.read_roots(prog)) if isinstance(p, str) \\\n'
+     '            else f"{p!r} is not a path"\n'
+     '        if why is None and not os.path.isdir(p):\n'
+     '            why = f"{p!r} isn\'t a directory on this host"\n',
+     '        why = None\n'),
+    ('SP-read-charter', 'bin/spawn.py',
+     '        reach_mod.check_read(prog, paths)\n',
+     '        pass\n'),
+    ('SP-read-waiver', 'bin/spawn.py',
+     '        if arm is None or "rule-of-two" not in (arm[1].get("waivers") or []):\n',
+     '        if False:\n'),
+    ('SP-read-ruling', 'bin/spawn.py',
+     '        arm = ruling_mod.newest(prog, "arm")\n',
+     '        arm = None\n'),
 ]
