@@ -1982,4 +1982,15 @@ NEUTERS = [
     ('RC-read-of', 'bin/reach.py',
      '            "read": [p for p in reach.get("read", []) if isinstance(p, str)],\n',
      '            "read": [],\n'),
+    ('TM-read-law', 'bin/team.py',
+     '                why = env_mod.read_refusal(v, env_mod.read_roots(prog))\n'
+     '                if why is None and not os.path.isdir(v):\n'
+     '                    why = f"{v!r} isn\'t a directory on this host"\n',
+     '                why = None\n'),
+    ('TM-read-charter', 'bin/team.py',
+     '                reach_mod.check_read(prog, reads)\n',
+     '                pass\n'),
+    ('TM-read-twice', 'bin/team.py',
+     '            if len(set(reads)) != len(reads):\n',
+     '            if False:\n'),
 ]
