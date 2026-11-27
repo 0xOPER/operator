@@ -654,7 +654,8 @@ class Door:
         with open(self.record, "w", encoding="utf-8") as f:
             f.write(self.sock + "\n")
         self._srv.listen(8)
-        self._thread = threading.Thread(target=self._serve, daemon=True, name="environment-door")
+        self._thread = threading.Thread(target=self._serve, args=(self._srv,), daemon=True,
+                                        name="environment-door")
         self._thread.start()
         return self
 
@@ -662,6 +663,16 @@ class Door:
         """The turn is over: no new request is served and a run in flight is killed."""
         self.abort.set()
         srv, self._srv = self._srv, None
+        # closing the socket from here does not wake a thread blocked in accept():
+        # one connection of our own brings it back, and the abort ends its loop
+        if self.sock:
+            wake = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            wake.settimeout(2)
+            try:
+                wake.connect(self.sock)
+            except OSError:
+                pass
+            wake.close()
         if srv is not None:
             try:
                 srv.close()
@@ -672,10 +683,10 @@ class Door:
         if self._room is not None:
             shutil.rmtree(self._room, ignore_errors=True)
 
-    def _serve(self):
+    def _serve(self, srv):
         while not self.abort.is_set():
             try:
-                conn, _ = self._srv.accept()
+                conn, _ = srv.accept()
             except OSError:
                 break
             with conn:
@@ -1259,7 +1270,10 @@ def selftest():
         a = ask(door_b.sock, "--env", "t", "--", "true")
         check(a.returncode == 1 and "environment budget is spent" in a.stderr,
               f"F5b a spent budget refuses by name: {a.stderr[-120:]!r}")
+        t0b = time.monotonic()
         door_b.close()
+        check(time.monotonic() - t0b < 10 and not door_b._thread.is_alive(),
+              f"F5c the turn's end is prompt and its thread is gone: {time.monotonic() - t0b:.1f}s")
         # F6 the turn's end is a run's end: an in-flight run is killed
         door_c = Door(adir_f, prog, ["t"]).start()
         box = {}
