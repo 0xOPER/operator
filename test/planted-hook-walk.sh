@@ -3,13 +3,18 @@
 # engine never runs git inside an attempt after the worker starts. A worker
 # whose .git is writable (a writable clone, when a grant asks for one) could
 # plant hooks and config-driven commands. This walk plants them where the
-# worker would have: in the attempt's .git, after a real turn. The real
-# delivery chain (seal, gate, collect, candidate) then runs, and nothing may
-# fire on the host. A positive control proves the detection is live: git run
-# in that repository ON THE HOST does fire the plants.
+# worker would have: in the attempt's .git, after a real turn. Two legs then
+# run the engine on that attempt, and nothing may fire on the host: the real
+# delivery chain (seal, gate, collect, candidate), and the engine's own verb on
+# the already-turned attempt (spawn.py adapter, a re-drive: the verb whose
+# adapter_prepare used to ask the attempt's repository, on the host, whether
+# the adapter's config file is tracked). A positive control proves the
+# detection is live: git run in that repository ON THE HOST does fire the
+# plants, each one a leg could have fired.
 #
-# --sabotage proves the walk can fail: against a copy of the engine whose
-# collector runs git inside the attempt on the host, the same walk reports it.
+# --sabotage proves the walk can fail, once per leg: against a copy of the
+# engine whose collector runs git inside the attempt on the host, and against
+# one whose adapter_prepare does, the same walk reports it.
 #
 # usage: planted-hook-walk.sh            (on-host: bwrap, git; first-level)
 #        planted-hook-walk.sh --selftest
@@ -33,19 +38,21 @@ fixture() {  # <dir>: a one-commit repository, or a non-zero code
 fire_control() {  # <repo>: git run in this repository on the host
   git -C "$1" add -A >/dev/null 2>&1            # the post-index-change hook
   printf 'protocol=https\nhost=x\n\n' | git -C "$1" credential fill >/dev/null 2>&1   # the helper
+  git -C "$1" ls-files -- opencode.json >/dev/null 2>&1   # the fsmonitor (the re-drive's call)
 }
 
 selftest() {
   local rc=0 T
   T=$(mktemp -d) || exit 2
   trap 'rm -rf "${T:?}"' EXIT
-  # A the plants are live where git runs in that repository: a hook and a
-  # config-driven command both leave their trace
+  # A the plants are live where git runs in that repository: a hook and the
+  # config-driven commands both leave their trace
   fixture "$T/a" || die "no git fixture"
   sh "$PLANT" "$T/a" "$T/m" || die "the plants didn't take"
   fire_control "$T/a"
   grep -q "post-index-change" "$T/m/HOOK-RAN" 2>/dev/null || { echo "A a planted hook fired: no trace"; rc=1; }
   grep -q "credential" "$T/m/CFG-RAN" 2>/dev/null || { echo "A a planted config command fired: no trace"; rc=1; }
+  grep -q "fsmonitor" "$T/m/CFG-RAN" 2>/dev/null || { echo "A the planted fsmonitor fired: no trace"; rc=1; }
   # B a repository without the plants leaves nothing: the traces are the plants'
   fixture "$T/b" || die "no git fixture"
   mkdir -p "$T/m2"
@@ -56,34 +63,44 @@ selftest() {
 }
 
 sabotage() {
-  # the walk must be able to fail: a collector that runs git inside the attempt
-  # on the host is exactly the regression it stands for
-  local S
-  S=$(mktemp -d "${TMPDIR:-/tmp}/phw-sab.XXXX") || die "no scratch"
-  [ -n "${PHW_KEEP:-}" ] || trap 'rm -rf "${S:?}"' EXIT
-  mkdir -p "$S/engine"
-  (cd "$ROOT" && tar --exclude=.git -cf - .) | (cd "$S/engine" && tar -xf -)
-  if ! python3 -I - "$S/engine/bin/spawn.py" <<'PY'
+  # the walk must be able to fail, once per leg. Each doctor puts a host-side
+  # git call inside the attempt back into a copy of the engine -- exactly the
+  # regression its leg stands for
+  local name S rc_all=0 rc
+  for name in collect reprepare; do
+    S=$(mktemp -d "${TMPDIR:-/tmp}/phw-sab.XXXX") || die "no scratch"
+    [ -n "${PHW_KEEP:-}" ] || trap 'rm -rf "${S:?}"' EXIT
+    mkdir -p "$S/engine"
+    (cd "$ROOT" && tar --exclude=.git -cf - .) | (cd "$S/engine" && tar -xf -)
+    if ! python3 -I - "$S/engine/bin/spawn.py" "$name" <<'PY'
 import pathlib, sys
 p = pathlib.Path(sys.argv[1]); t = p.read_text()
-old = "def collect(attempt):\n"
-assert t.count(old) == 1
-new = old + ("    import subprocess as _s  # SABOTAGE: git inside the attempt, on the host\n"
-             "    _s.run([\"git\", \"-C\", os.path.join(attempt, \"repo\"), \"status\", \"--short\"], capture_output=True)\n")
+if sys.argv[2] == "collect":
+    old = "def collect(attempt):\n"
+    new = old + ("    import subprocess as _s  # SABOTAGE: git inside the attempt, on the host\n"
+                 "    _s.run([\"git\", \"-C\", os.path.join(attempt, \"repo\"), \"status\", \"--short\"], capture_output=True)\n")
+else:
+    old = "    body = manifest.get(\"repo_config_body\")\n"
+    new = old + ("    import subprocess as _s  # SABOTAGE: git inside the attempt, on the host\n"
+                 "    _s.run([\"git\", \"-C\", os.path.join(attempt, \"repo\"), \"ls-files\", \"--\", \"opencode.json\"],\n"
+                 "           capture_output=True, env=engine_env())\n")
+assert t.count(old) == 1, f"the walk's sabotage anchor moved: {old!r}"
 p.write_text(t.replace(old, new))
 PY
-  then die "the doctoring didn't take"
-  fi
-  PLANTED_HOOK_ENGINE="$S/engine" bash "$ME" > "$S/walk.out" 2>&1
-  local rc=$?
-  if [ "$rc" = 0 ]; then
-    echo "sabotage: FAIL (the walk passed against a collector that runs git in the attempt on the host)"
-    sed 's/^/    /' "$S/walk.out"; exit 1
-  fi
-  grep -q "ran host-side" "$S/walk.out" || {
-    echo "sabotage: FAIL (the doctored tree failed the walk for another reason)"; sed 's/^/    /' "$S/walk.out"; exit 1; }
-  echo "sabotage: OK (the walk reports a collector that runs git inside the attempt on the host)"
-  exit 0
+    then die "the doctoring didn't take"; fi
+    PLANTED_HOOK_ENGINE="$S/engine" bash "$ME" > "$S/walk.out" 2>&1
+    rc=$?
+    if [ "$rc" = 0 ]; then
+      echo "sabotage($name): FAIL (the walk passed against an engine whose $name runs git in the attempt on the host)"
+      sed 's/^/    /' "$S/walk.out"; rc_all=1
+    elif ! grep -q "ran host-side" "$S/walk.out"; then
+      echo "sabotage($name): FAIL (the doctored tree failed the walk for another reason)"; sed 's/^/    /' "$S/walk.out"; rc_all=1
+    else
+      echo "sabotage($name): OK (the walk reports an engine whose $name runs git inside the attempt on the host)"
+    fi
+    [ -n "${PHW_KEEP:-}" ] || rm -rf -- "$S"
+  done
+  exit $rc_all
 }
 
 [ "${1:-}" = --selftest ] && selftest
@@ -140,8 +157,34 @@ for m in HOOK-RAN CFG-RAN; do
 done
 echo "  chain: seal, gate, collect, candidate -- no hook and no config command ran on the host"
 
+# --- 4b the engine's own verb, on the attempt the worker already turned (a
+# re-drive). Only an adapter whose manifest plants a repo config asks the
+# attempt's repository anything (is the config file tracked?), so the seat's
+# adapter is one that does; its turn is a shell that changes nothing. The
+# config must land: a verb that refused before the question proves nothing
+mkdir -p "$D/adapters"
+cat > "$D/adapters/stub.toml" <<'TOML'
+schema = 1
+name = "stub"
+tested_classes = ["write"]
+tool_fencing = "unfenced"
+argv = ["/bin/sh", "-c", "echo re-drive"]
+repo_config = "opencode.json"
+repo_config_body = '{ "model": "fixture" }'
+engine_bins = ["bin/lib/stub-adapter.py"]
+cost_stream = "jsonl"
+TOML
+OPERATOR_ADAPTERS="$D/adapters" timeout -k 10 150 python3 "$ENGINE/bin/spawn.py" adapter "$ADIR" --timeout 120 > "$D/redrive.out" 2>&1
+grep -q "^rc=0" "$D/redrive.out" || fail "the re-drive never ran: $(tail -n 1 "$D/redrive.out")"
+[ -f "$ADIR/repo/opencode.json" ] || fail "the re-drive never planted the config: the verb asked the repository nothing, so the leg proves nothing"
+for m in HOOK-RAN CFG-RAN; do
+  [ -e "$D/host/$m" ] && fail "a planted $m ran host-side through the engine's own verb on the turned attempt: $(sort -u "$D/host/$m" | tr '\n' ' ')"
+done
+echo "  re-drive: the engine's own verb on the turned attempt -- no hook and no config command ran on the host"
+
 # --- 5 the control: the same plants DO fire where git runs in that repository on the host
 fire_control "$ADIR/repo"
 if [ ! -s "$D/host/HOOK-RAN" ] || [ ! -s "$D/host/CFG-RAN" ]; then fail "the control did not fire: the walk proves nothing"; fi
+grep -q "fsmonitor" "$D/host/CFG-RAN" || fail "the control never fired the fsmonitor: the re-drive leg proves nothing"
 echo "  control: git run in that repository on the host fires the plants (the detection is live)"
-echo "planted-hook-walk: OK (the chain never runs git in the attempt; the plants are live)"
+echo "planted-hook-walk: OK (neither the chain nor the engine's own verb runs git in the attempt; the plants are live)"
