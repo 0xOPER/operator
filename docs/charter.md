@@ -201,8 +201,8 @@ adapter that can. The `declared` rule is built: `operator reach allow <dir>
 open one host on 443 for a seat that already holds a network grant, for
 `declared_ttl` seconds while fewer than `declared_max` are live, never a
 denied host; every one is a row in the call log, and it rides the seat's next
-turn. Open: the writable clone. Not buildable as the
-plan first wrote it: "egress bodies" —
+turn. Not buildable as the plan first
+wrote it: "egress bodies" —
 an HTTPS tunnel's body is encrypted, and the broker's request bodies are the
 worker's own prompts, where key-shaped strings are often honest fixtures.
 
@@ -231,29 +231,56 @@ the door now asks for the same signed `rule-of-two` waiver, with the same
 named fix: the jail is not built without it. What `ro` binds on its own does
 not change.
 
-A worker's `.git` is bound read-only today, which rules out worktree fan-out. A
-seat that needs fan-out gets a real writable clone only when a conformance cell
-proves that a hook planted there never runs host-side. The invariant a clone
-rests on: the engine runs git inside an attempt only while it builds it.
-`test/planted-hook-walk.sh` stands over it with two legs. It plants what a
-writable `.git` could plant after a real turn, runs the real delivery chain
-(seal, gate, collect, candidate), then drives the turned attempt again through
-the engine's own verb (`spawn.py adapter`), and checks that nothing fired on
-the host. A control shows the plants are live, and `--sabotage` shows that each
-leg can fail. A static half backs the walk: `GIT_FUNCTIONS` and
-`GIT_PARENT_FUNCTIONS` (`bin/spawn.py`) say where engine git lives (the
-helpers, the build's own repositories, and after the build the run's parent
-only), and the selftest refuses a git call anywhere else in the module.
+The writable clone is built (M2). A seat that holds `shell` gets a real
+clone: in its jail the repository binds read-write, `.git` with it, so the
+worker branches in it and adds worktrees of its own. It is a shell-class
+feature, asked for by the seat's `shell` grant (the key is declarative) and
+earned per adapter: the adapter's manifest must prove the class in
+`tested_classes`, behind the `shell-allowed` and `clone-allowed` conformance
+cells. Both are held again where the jail is built, from the ruled team and
+the engine's own manifest. A seat that does not ask keeps the read-only
+`.git` it always had, and so does a seat on an adapter that has not earned
+the class; a review turn's repository is read-only whole.
 
-The seam the walk had is closed (measured before and after: a planted
+The invariant a clone rests on: the engine runs git inside an attempt only
+while it builds it. `test/planted-hook-walk.sh` stands over it with three
+legs. It plants what a writable `.git` could plant after a real turn and runs
+the real delivery chain (seal, gate, collect, candidate); it drives the
+turned attempt again through the engine's own verb (`spawn.py adapter`); and
+in a clone it lets the worker's own turn plant from inside the jail, then
+runs the chain again. Nothing may fire on the host. A control shows the
+plants are live, and `--sabotage` shows that each leg can fail. A static half
+backs the walk: `GIT_FUNCTIONS` and `GIT_PARENT_FUNCTIONS` (`bin/spawn.py`)
+say where engine git lives (the helpers, the build's own repositories, and
+after the build the run's parent only), and the selftest refuses a git call
+anywhere else in the module.
+
+What a writable `.git` lets a worker plant, and why none of it reaches the
+host. There is no kill switch: a setting written into a config the worker can
+rewrite stops nothing where the worker already runs everything. Each plant is
+closed by structure. Hooks, `core.hooksPath`, `core.fsmonitor`,
+`core.sshCommand`, credential helpers, clean and smudge filters,
+`include.path`, `url.*.insteadOf`, any `*.program` or `*.command`: each runs
+only where git runs with that repository's config, and after the build that
+is the worker's own jail and nowhere else (no engine git runs in the attempt:
+`GIT_FUNCTIONS`). The seal stages the work tree into a git directory of its
+own (`SEAL_SCRIPT`'s `GIT_DIR`), so it consults neither the clone's config
+nor its hooks, and git matches no path inside a work tree's `.git`, even
+under the grant that names it (measured): `.git` is never delivered, and a
+side branch's commit and blob stay out of the parent. Host-side code never
+opens a file under `.git`. No jail binds `.git` on its own any more, so a
+worker cannot aim a bind through it. Delivery is what it was: the main work
+tree's files, under the seat's grants, through the git-object gate; a
+worktree the worker adds is the worker's own and delivers nothing.
+
+The seam the walk had was closed first (measured before and after: a planted
 `core.fsmonitor` fired on the host, then did not). `adapter_prepare`
 (`bin/spawn.py`) asked the attempt's own repository, on the host, whether the
-adapter's config file is tracked, whenever an attempt was driven again. Nothing
-reached it: `.git` was read-only in the jail and every turn builds a fresh
-attempt. It is the first thing a writable clone would open. The question is now
-answered by the build's own listing (`tracked.json`: what the start commit
-tracks, without the names the attempt hides), written before any worker
-exists. The clone is not built; section 11 says where M2 stands.
+adapter's config file is tracked, whenever an attempt was driven again.
+Nothing reached it: `.git` was read-only in the jail and every turn builds a
+fresh attempt. The question is now answered by the build's own listing
+(`tracked.json`: what the start commit tracks, without the names the attempt
+hides), written before any worker exists.
 
 ## 6. The manager
 
@@ -456,7 +483,7 @@ control is removed.
 | credential broker | a prompt-injected worker exfiltrates the key | the canary walk, the topology drill, the broker selftest |
 | jail and git-object write gate | host damage, out-of-grant writes, symlink and hook smuggling | the conformance cells, the import gate arms |
 | the read class: the charter's list, the path law, and the `rule-of-two` waiver, all held again where the jail is built | a prompt-injected worker exfiltrates a host directory beside a network grant, or reads the engine's own tree, a credential directory or a home | the read arms of the environment, reach, team and spawn selftests (20 neuter rows), the `read-allowed` cell; the same waiver for the older key `ro` beside `network`: the ro arms of the team and spawn selftests (3 neuter rows) |
-| the delivery invariant: the engine runs git inside an attempt only while it builds it | a hook or config command planted in a writable `.git` (`core.fsmonitor`, a hook, a credential helper) runs on the host through the engine | `test/planted-hook-walk.sh`, its chain leg and its re-drive leg, each with a sabotage; `GIT_FUNCTIONS` and `GIT_PARENT_FUNCTIONS`, held by `bin/spawn.py --selftest` (4 neuter rows) |
+| the delivery invariant: the engine runs git inside an attempt only while it builds it | a hook or config command planted in a writable `.git` (`core.fsmonitor`, a hook, a credential helper) runs on the host through the engine | `test/planted-hook-walk.sh`, its chain, re-drive and clone legs, each with a sabotage; `GIT_FUNCTIONS` and `GIT_PARENT_FUNCTIONS`, held by `bin/spawn.py --selftest` (4 neuter rows); the clone's own door, held by the spawn selftest and first-level (6 neuter rows); the `clone-allowed` cell |
 | sealed oracle, runner-config seal, `pytest-guard` | test tampering, fake green | the hollow battery, the sealed probes |
 | dual gate with provenanced verdicts | forged or stale review | the review suite's forgery arms |
 | ledger that always settles | budget evasion | the settle arms |
@@ -496,7 +523,7 @@ each row by delegation.
 |---|---|---|---|
 | M0 | Charter law | the signed plan | this document |
 | M1 | Environments | container and GPU work | built: the charter, the door, `env` rows, the worker socket, a fingerprint of the work directory in every receipt. The exit is the parked program's two rows closing as machine rows |
-| M2 | Reach | network, shell, read | built: a seat's network from the charter, through the egress proxy; a credential shape refused on the wire; `shell` on the three adapters, the jail the law; `read`: host directories the charter lists, bound read-only at their own path, with the signed `rule-of-two` waiver beside `network`, asked for the older key `ro` too; the `declared` rule and the operator's `net.allow`, its brief naming the hosts the charter refused. Open: the writable clone (not built; the seam it waited on is closed, section 5) |
+| M2 | Reach | network, shell, read | built: a seat's network from the charter, through the egress proxy; a credential shape refused on the wire; `shell` on the three adapters, the jail the law; `read`: host directories the charter lists, bound read-only at their own path, with the signed `rule-of-two` waiver beside `network`, asked for the older key `ro` too; the `declared` rule and the operator's `net.allow`, its brief naming the hosts the charter refused.; the writable clone for `shell` seats, with the delivery invariant whole behind it (section 5); the clone's conformance cells are CI's to confirm |
 | M3 | Evidence | contract authoring as a precondition | first slice built: `operator derive`. Open: the hollow twin and the `reviewed-only` label, the lint against existence-class anchors, `min_mutation_kill`, the evidence mix, the templates |
 | M4 | The manager | triage seat becomes executive | open |
 | M5 | Enclose | external orchestrators as workers or managers | open, gated on probes |

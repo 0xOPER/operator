@@ -63,8 +63,8 @@ working examples (copy them via `bin/operator.sh init` rather than editing
 
 > **Enforceability & inert keys:** `claude-code`, `codex` and `opencode` declare
 > `tested_classes = ["write", "network", "shell", "read"]`, each with
-> `net-allowed`, `shell-allowed` and `read-allowed` conformance cells (CI runs
-> them at the pins); the others declare
+> `net-allowed`, `shell-allowed`, `read-allowed` and `clone-allowed` conformance
+> cells (CI runs them at the pins); the others declare
 > `write` only. A grant outside its adapter's tested range is **refused** by
 > `bin/team.py`. Seat `mcp` grants are **refused** for every adapter. `memory`, `skills`, and
 > `mcp` declarations are currently **inert** (accepted with a note, not yet
@@ -349,6 +349,17 @@ outside the repository, a host path, the network) is refused: by the jail and
 the proxy on `codex` and `opencode`, and on `claude-code` by the CLI's own
 check first, with the jail behind it. No shipped adapter enforces command
 prefixes; the grammar accepts them, for an adapter that can.
+
+**The writable clone.** A seat that holds `shell` gets a real clone in its
+jail: the repository binds read-write, `.git` with it, so the worker branches
+in it and adds worktrees of its own. The class is earned per adapter
+(`tested_classes`, behind the `shell-allowed` and `clone-allowed` cells), and
+both the grant and the class are held again where the jail is built: a seat
+on an adapter that has not earned it keeps the read-only `.git`, as a seat
+without `shell` does, and a reviewer's repository is read-only whole. Nothing
+a worker plants in the clone reaches the host (`docs/charter.md`, section 5:
+the delivery invariant and the walk's clone leg). Delivery is unchanged: the
+main work tree's files under the `write` grants, through the gate.
 
 ### Templates and state
 
