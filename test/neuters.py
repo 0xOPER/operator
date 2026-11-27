@@ -1573,11 +1573,19 @@ NEUTERS = [
     # one rides (the padded and the repeated one follow it, K1, K2, K4)
     ("BK-resp-frame-length", BK,
      'self.send_header("Content-Length", str(length))',
-     'self.send_header("Content-Length", str(length) + "0")'),
+     'self.send_header("Content-Length", str(length) + " ")'),
     # a body the origin closed off closes the client's frame too (K3, K5)
     ("BK-resp-frame-close", BK,
      'self.send_header("Connection", "close")',
      'pass'),
+    # a frame of no bytes is announced: without it a kept-alive client waits forever (K7)
+    ("BK-resp-frame-zero", BK,
+     'elif length is not None:',
+     'elif length:'),
+    # a chunked origin rides chunked (K8)
+    ("BK-resp-frame-chunked", BK,
+     'chunked = resp.chunked',
+     'chunked = False'),
     # a body the origin cut short ends the connection instead of leaving the client
     # waiting (K6)
     ("BK-resp-frame-short", BK,
@@ -1588,6 +1596,10 @@ NEUTERS = [
     ("BK-req-header-clean", BK,
      'if not all(clean_header(k, v) for k, v in headers.items()):',
      'if False:'),
+    # ...and its name must be one token: anything else used to ride to the origin (L4)
+    ("BK-req-header-name", BK,
+     'return bool(HEADER_NAME_RE.fullmatch(k) and HEADER_VALUE_RE.fullmatch(v))',
+     'return bool(HEADER_VALUE_RE.fullmatch(v))'),
     # --- the sealed check's export: the candidate's exec bit ---
     # it rides at all: without it a script the candidate adds isn't executable (K9a)
     ("CT-exec-bit", CT,

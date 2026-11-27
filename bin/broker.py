@@ -1285,7 +1285,11 @@ def selftest():
                 "    b'/v1/messages?k=dup': head(SSE, b'Content-Length: 160\\r\\n', b'88') + sse + forged,\n"
                 "    b'/v1/messages?k=close': head(SSE) + sse,\n"
                 "    b'/v1/messages?k=short': head(SSE, cl=b'500') + sse,\n"
+                "    b'/v1/messages?k=zero': head(SSE, cl=b'0'),\n"
+                "    b'/v1/messages?k=chunked': head(SSE, b'Transfer-Encoding: chunked\\r\\n') + "
+                "b'58\\r\\n' + sse + b'\\r\\n0\\r\\n\\r\\n',\n"
                 "    b'/v1/messages?l=clean': head(JSON, cl=b'2') + b'{}',\n"
+                "    b'/v1/messages?l=name': head(JSON, cl=b'2') + b'{}',\n"
                 "}\n"
                 "srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n"
                 "srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n"
@@ -1357,6 +1361,8 @@ def selftest():
                     hd, sep, body = out.partition(b"\r\n\r\n")
                     m = re.search(rb"(?im)^content-length:\s*(\d+)", hd) if sep else None
                     if m and len(body) >= int(m.group(1)):
+                        break
+                    if re.search(rb"(?im)^transfer-encoding:\s*chunked", hd) and out.endswith(b"0\r\n\r\n"):
                         break
             except OSError:
                 pass
@@ -1447,6 +1453,19 @@ def selftest():
         check(named(lines_k, "content-length") == [b"content-length: 500"]
               and body_k == sse_b and closed_k,
               f"K6 a body cut short of its length ends the connection: {lines_k!r}")
+        # K7 a frame of no bytes is announced: on a connection that stays open, a response
+        # with no frame at all leaves the client waiting for a body that already ended
+        out_k, closed_k = raw_turn(b"/v1/messages?k=zero")
+        lines_k, body_k = halves(out_k)
+        check(named(lines_k, "content-length") == [b"content-length: 0"] and body_k == b"" and not closed_k,
+              f"K7 a zero-length frame is announced and the connection stays: {lines_k!r}")
+        # K8 a chunked origin rides chunked: the bytes http.client decoded, framed again
+        out_k, closed_k = raw_turn(b"/v1/messages?k=chunked")
+        lines_k, body_k = halves(out_k)
+        check(named(lines_k, "transfer-encoding") == [b"transfer-encoding: chunked"]
+              and named(lines_k, "content-length") == [] and named(lines_k, "connection") == []
+              and body_k == b"58\r\n" + sse_b + b"\r\n0\r\n\r\n" and not closed_k,
+              f"K8 a chunked origin rides chunked: {lines_k!r} {body_k[:48]!r}")
         # L the law holds on the way out too: a client header carrying a fold or a
         # control byte is refused before the origin ever sees it; a clean one rides
         for l_extra, l_shape in ((b"X-R: a\r\n b\r\n", "a fold"),
@@ -1464,6 +1483,14 @@ def selftest():
         check(len(seen_l) == 1 and "x-ok: 1" in seen_l[0].lower()
               and "x-r:" not in seen_l[0].lower(),
               f"L3 the origin saw the clean request alone: {seen_l}")
+        out_l, _ = raw_turn(b"/v1/messages?l=name", extra=b"X-R(1): v\r\n")
+        check(out_l.startswith(b"HTTP/1.1 400 "),
+              f"L4 a client header whose name is not a token refuses 400: {out_l[:60]!r}")
+        with open(seen_raw, encoding="latin-1") as sf:
+            seen_n = [h for p, h in (json.loads(x) for x in sf.read().splitlines())
+                      if p == "/v1/messages?l=name"]
+        check(not any("x-r(1)" in h.lower() for h in seen_n),
+              f"L4 the origin never saw the name: {seen_n}")
         p_rawbr.terminate()
         p_raw.terminate()
         p_rawbr.wait(timeout=10)
