@@ -452,7 +452,7 @@ each row by delegation.
 |---|---|---|---|
 | M0 | Charter law | the signed plan | this document |
 | M1 | Environments | container and GPU work | built: the charter, the door, `env` rows, the worker socket, a fingerprint of the work directory in every receipt. The exit is the parked program's two rows closing as machine rows |
-| M2 | Reach | network, shell, read | built: a seat's network from the charter, through the egress proxy; a credential shape refused on the wire; `shell` on the three adapters, the jail the law. Open: the `declared` rule, `net.allow` (with the manager), and `read` |
+| M2 | Reach | network, shell, read | built: a seat's network from the charter, through the egress proxy; a credential shape refused on the wire; `shell` on the three adapters, the jail the law; the `declared` rule and the operator's `net.allow`, its brief naming the hosts the charter refused. Open: `read` (no text says what it reaches), and the writable clone |
 | M3 | Evidence | contract authoring as a precondition | first slice built: `operator derive`. Open: the hollow twin and the `reviewed-only` label, the lint against existence-class anchors, `min_mutation_kill`, the evidence mix, the templates |
 | M4 | The manager | triage seat becomes executive | open |
 | M5 | Enclose | external orchestrators as workers or managers | open, gated on probes |
