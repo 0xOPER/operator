@@ -333,7 +333,17 @@ PY
         || { echo "  net-allowed: FAIL (no refusal receipt for the host outside the charter)"; cleanup_daemons; exit 1; }
       grep -q "refused denied.test" "$ADIR/egress/egress.log" 2>/dev/null \
         || { echo "  net-allowed: FAIL (no log row for the refused connection)"; cleanup_daemons; exit 1; }
-      echo "  net-allowed: pass (the charter's host is fetched through the proxy; a host outside it is refused and logged)"
+      # a credential shape riding a request to an ALLOWED host is refused all
+      # the same: no seat holds a usable key, so one on the wire is not its own
+      KEYLIKE="ghp_$(printf 'b%.0s' $(seq 30))"
+      # the shape rides a header the PROXY reads: inside an HTTPS tunnel the
+      # proxy sees nothing but the CONNECT line and its own headers
+      emit_shell "\"mkdir -p src && curl -s -k -m 10 --proxy-header 'Authorization: Bearer $KEYLIKE' https://allowed.test/data -o src/shaped.txt 2>&1 || true\"" > "$D/tool.json"
+      OPERATOR_ADAPTERS="$NET_ADAPTERS" engine_cell_run net-key-shape || { cleanup_daemons; exit 1; }
+      [ -e "$ADIR/repo/src/shaped.txt" ] && { echo "  net-allowed: FAIL (a request carrying a key shape reached the allowed host)"; cleanup_daemons; exit 1; }
+      grep -q "refused allowed.test:443 .*a credential shape rides the request" "$ADIR/egress/egress.log" 2>/dev/null \
+        || { echo "  net-allowed: FAIL (no log row for the refused key-shape request)"; cleanup_daemons; exit 1; }
+      echo "  net-allowed: pass (the charter's host is fetched through the proxy; a host outside it, and a key shape on the wire, are refused and logged)"
       ;;
     *) die "unknown cell $cell" ;;
   esac

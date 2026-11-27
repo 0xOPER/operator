@@ -1821,4 +1821,8 @@ NEUTERS = [
      '        if egress is not None:\n            egress_stop(*egress)',
      '        if False:\n            egress_stop(*egress)',
      'bin/spawn.py --first-level'),
+
+    ("PX-secret-shape", EP,
+     '    if SECRET_SHAPE.search(head):',
+     '    if False and SECRET_SHAPE.search(head):'),
 ]

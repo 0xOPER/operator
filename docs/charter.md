@@ -173,9 +173,10 @@ and the broker stays the only door that has one.
   conformance cell exists for that adapter and class. The grant is earned per
   adapter, not declared.
 - `net.allow` is a manager verb, bounded by the `declared` rule.
-- A plaintext body that carries a live credential is refused and logged at
-  every door where the engine can read it: the broker and plain HTTP. An
-  encrypted tunnel cannot be read; that limit is stated, not hidden.
+- A credential shape riding what the egress proxy can read (the CONNECT line
+  and its headers, a plain-HTTP request) is refused and logged, naming the
+  host and never the bytes. Inside an HTTPS tunnel the proxy reads nothing:
+  that limit is stated, not hidden. Built.
 - A `closed` profile keeps today's behaviour for repositories that need it.
 
 Built so far (M2, first slice): the policy comes from the charter and the proxy
@@ -183,9 +184,12 @@ re-reads it on every connection; a seat's `network` grant is bounded by the
 charter and refused outside it; the jail gets the proxy as its only door, with
 one log row per connection; `network` is in the `tested_classes` of
 `claude-code`, `codex` and `opencode`, each with a `net-allowed` conformance
-cell. Open: the `declared` rule and the `net.allow` verb (they come with the
-manager), the refusal of bodies that carry a live credential, and the writable
-clone.
+cell; a credential shape riding a request head is refused and logged (the
+`net-allowed` cell proves it in a real jail). Open: the `declared` rule and
+the `net.allow` verb (they come with the manager), `shell` and `read`, and the
+writable clone. Not buildable as the plan first wrote it: "egress bodies" —
+an HTTPS tunnel's body is encrypted, and the broker's request bodies are the
+worker's own prompts, where key-shaped strings are often honest fixtures.
 
 A worker's `.git` is bound read-only today, which rules out worktree fan-out. A
 seat that needs fan-out gets a real writable clone only when a conformance
