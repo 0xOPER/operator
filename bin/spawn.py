@@ -4,8 +4,10 @@ collect, gate, candidate, promote.
 
 Every step fails closed, and the worker's bytes reach the engine only through a jail or
 a pipe: the engine's git runs on parent objects with a scrubbed environment and never
-inside an attempt after the worker starts; the seal, the collector and the worker run
-in jails built by bin/lib/jail.py; the supervisor alone drains the worker's pipes into
+inside an attempt after the worker starts (inside an attempt only while the engine builds
+it, before any worker exists: GIT_FUNCTIONS says where engine git lives, and the re-drive
+leg of test/planted-hook-walk.sh stands over it); the seal, the collector and the worker
+run in jails built by bin/lib/jail.py; the supervisor alone drains the worker's pipes into
 files outside the sandbox, so no descriptor the worker holds can truncate its own
 record. Delivery is what the commit says, not what the attempt claimed: the gate
 re-derives every rule on the fetched bundle, and candidate re-derives them on the
@@ -633,7 +635,7 @@ def build_attempt(rd, seat, grants, ref, aid, task, prog, seats):
     # walk's row -- visibility rode the write grant, so naming a tree visible
     # (a .github with a hundred files) meant widening DELIVERY. `see` names
     # paths for the checkout only; the tree check still gates on the grants.
-    see, gpu, ro, env, network, shell = [], False, [], [], [], []
+    see, gpu, ro, env, network, shell, read = [], False, [], [], [], [], []
     if prog:
         try:
             _, seats_doc, _ = load_team(prog)
@@ -646,6 +648,7 @@ def build_attempt(rd, seat, grants, ref, aid, task, prog, seats):
         env = list(seat_doc.get("env") or [])
         network = list(seat_doc.get("network") or [])
         shell = list(seat_doc.get("shell") or [])
+        read = list(seat_doc.get("read") or [])
     visible = grants + see
     stage_info = os.path.join(stage_repo, ".git", "info")
     os.makedirs(stage_info, exist_ok=True)
@@ -671,7 +674,7 @@ def build_attempt(rd, seat, grants, ref, aid, task, prog, seats):
     meta = {"id": aid, "seat": seat, "grants": grants, "see": see, "ref": ref,
             "start": start_sha, "task": task, "prog": prog,
             "seats": [x for x in (seats or []) if x],
-            "gpu": gpu, "ro": ro, "env": env, "network": network, "shell": shell,
+            "gpu": gpu, "ro": ro, "env": env, "network": network, "shell": shell, "read": read,
             "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     # a queued reply rides this attempt's mail, once: the pending note is
     # consumed here so a second reply re-pends instead of stacking silently
@@ -689,6 +692,11 @@ def build_attempt(rd, seat, grants, ref, aid, task, prog, seats):
         json.dump(meta, f, indent=1, sort_keys=True)
     with open(os.path.join(adir, "hidden.json"), "w") as f:
         json.dump(hidden, f, indent=1, sort_keys=True)
+    # what the start commit tracks, as the stage repository listed it: the engine's
+    # own answer to "does the repo track <path>?" (adapter_prepare), taken before any
+    # worker exists. The attempt's index is this list without the hidden names
+    with open(os.path.join(adir, "tracked.json"), "w") as f:
+        json.dump(tracked, f, indent=1, sort_keys=True)
     return adir
 
 
@@ -1434,9 +1442,117 @@ def seat_gpu_binds(meta):
     return [x for n in nodes for x in ("--dev-bind", n, n)]
 
 
+def rule_of_two(attempt, meta, holds):
+    """The rule of two, asked where the jail is built for a seat that holds `holds`
+    beside a network grant (docs/charter.md section 5): a worker that can read a
+    host path and talk to the network can exfiltrate what it reads, so the owner
+    signs that. The newest arm ruling must carry the signed rule-of-two waiver
+    (bin/review.py reads a ruling the same way at its door); a refusal names the
+    fix. The read class and the older seat key ro ask it here, each in its door."""
+    import ruling as ruling_mod
+    arm = ruling_mod.newest(meta["prog"], "arm")
+    if arm is None or "rule-of-two" not in (arm[1].get("waivers") or []):
+        raise Refused(
+            f"seat {meta.get('seat')} holds {holds} beside a network grant: a worker "
+            "that can read a host directory and talk to the network can exfiltrate it, so "
+            "the owner signs that. Re-arm with the waiver (operator ruling sign <dir> "
+            "--kind arm --waive rule-of-two), or drop one of the two grants")
+
+
+def read_binds(attempt, meta):
+    """The read class where every worker jail is built (docs/charter.md section 5).
+    Nothing in the attempt's meta is taken on trust: each path meets the stricter
+    path law again and is a directory on this host (bin/environment.py), and is
+    inside the charter's list (bin/reach.py). Beside a network grant the newest arm
+    ruling must carry the signed rule-of-two waiver (rule_of_two). The binds are
+    read-only, at each path's own place. A refusal names its fix."""
+    paths = meta.get("read") or []
+    if not paths:
+        return []
+    prog = meta.get("prog")
+    if not prog:
+        raise Refused("the seat's read grant needs the program directory: the charter "
+                      "lists what it may read")
+    import environment as env_mod
+    import reach as reach_mod
+    for p in paths:
+        why = env_mod.read_refusal(p, env_mod.read_roots(prog)) if isinstance(p, str) \
+            else f"{p!r} is not a path"
+        if why is None and not os.path.isdir(p):
+            why = f"{p!r} isn't a directory on this host"
+        if why:
+            raise Refused(f"the seat's read grant names no directory this engine binds: {why}")
+    try:
+        reach_mod.check_read(prog, paths)
+    except (reach_mod.Finding, env_mod.Finding) as e:
+        raise Refused(f"the seat's read grant isn't inside the charter's directories: {e}")
+    if meta.get("network"):
+        rule_of_two(attempt, meta, "a read grant")
+    return [x for p in paths for x in ("--ro-bind", p, p)]
+
+
+def ro_binds(attempt, meta):
+    """The seat's ro data paths where every worker jail is built: read-only, at each
+    path's own place, as before. Beside a network grant they are the same
+    exfiltration path a read grant is (the same worker, the same host directory),
+    so the same door asks for the same signed rule-of-two waiver (rule_of_two).
+    ro is not the read class: no charter lists it and its path law stays the
+    author's (bin/team.py); what it binds on its own does not change."""
+    paths = meta.get("ro") or []
+    if not paths:
+        return []
+    if meta.get("network"):
+        if not meta.get("prog"):
+            raise Refused("the seat's ro grant beside a network grant needs the program "
+                          "directory: the owner signs the waiver (operator ruling sign "
+                          "<dir> --kind arm --waive rule-of-two)")
+        rule_of_two(attempt, meta, "an ro path")
+    return [x for p in paths for x in ("--ro-bind", p, p)]
+
+
+def clone_for(attempt, meta):
+    """Whether this attempt's worker may write its repository's .git: the writable
+    clone (docs/charter.md section 5). A shell-class feature, asked for by the
+    seat's shell grant (the key is declarative: no shipped adapter keeps a
+    per-command law) and earned per adapter: the adapter's manifest must prove the
+    class (tested_classes, behind the shell-allowed and clone-allowed cells).
+    Both are held here, where the jail is built, from the ruled team and the
+    engine's own manifest; the attempt's meta opens nothing by itself (it only
+    says the seat asked where the attempt was built, which spares every other
+    seat the team's loading). A seat that does not ask gets the read-only .git
+    it always had, and so does one whose adapter has not earned the class."""
+    if not meta.get("shell"):
+        return False
+    try:
+        prog = meta.get("prog")
+        _, seats, _ = load_team(prog) if prog else (None, {}, None)
+        seat = seats.get(meta.get("seat")) or {}
+        if not seat.get("shell"):
+            return False
+        return "shell" in (adapter_manifest(seat.get("adapter") or "stub")
+                           .get("tested_classes") or [])
+    except (Void, Refused, ValueError):
+        return False
+
+
+def repo_binds(attempt, meta, repo_rw=True):
+    """The worker's repository and its .git. With the clone the repository binds
+    once, read-write, .git with it: the worker branches in it and adds worktrees.
+    Without it, .git is its own read-only bind. The clone is the worker's own to
+    write, and nothing else's: no git that honours its config runs outside the
+    worker's jail (GIT_FUNCTIONS; the seal stages the work tree into a git
+    directory of its own), so what a worker plants there fires only where the
+    worker already runs everything, and it is never delivered. A review turn's
+    repository is read-only whole, clone or not."""
+    if not (repo_rw and clone_for(attempt, meta)):
+        return [(("--bind" if repo_rw else "--ro-bind"), os.path.join(attempt, "repo"), "/w/repo"),
+                ("--ro-bind", os.path.join(attempt, "repo", ".git"), "/w/repo/.git")]
+    return [("--bind", os.path.join(attempt, "repo"), "/w/repo")]
+
+
 def jail_binds_for(attempt, etc_dir, repo_rw=True):
-    binds = [(("--bind" if repo_rw else "--ro-bind"), os.path.join(attempt, "repo"), "/w/repo"),
-             ("--ro-bind", os.path.join(attempt, "repo", ".git"), "/w/repo/.git"),
+    meta = meta_load(attempt)
+    binds = repo_binds(attempt, meta, repo_rw) + [
              ("--bind", os.path.join(attempt, "out"), "/w/out"),
              ("--bind", os.path.join(attempt, "home"), "/w/home"),
              ("--ro-bind", os.path.join(attempt, "compiled"), "/w/compiled")]
@@ -1446,11 +1562,12 @@ def jail_binds_for(attempt, etc_dir, repo_rw=True):
     for f in ("passwd", "hosts", "machine-id", "hostname"):
         flat += ["--ro-bind", os.path.join(etc_dir, f), f"/etc/{f}"]
     # the seat's own flags reach every jail shape from this one place: the
-    # gpu nodes (or the named refusal), and the seat's ro data paths
-    meta = meta_load(attempt)
+    # gpu nodes (or the named refusal), the seat's ro data paths (the rule of
+    # two beside a network grant asked here, as the read class asks it), and
+    # its read directories (the read class, its law held again here)
     flat += seat_gpu_binds(meta)
-    for r in meta.get("ro") or []:
-        flat += ["--ro-bind", r, r]
+    flat += ro_binds(attempt, meta)
+    flat += read_binds(attempt, meta)
     if meta.get("env"):
         # the seat's environment socket and its client. The socket exists only
         # while the door is up, so a jail is built after env_door() starts.
@@ -1574,7 +1691,8 @@ def egress_wrapper(next_script):
 
 
 def worker_argv(attempt, cmd, etc_dir, nproc=NPROC):
-    """The worker jail: repo rw, .git ro, out and home rw, compiled ro, generated
+    """The worker jail: repo rw (.git its own read-only bind, unless the seat's
+    clone opens it: repo_binds), out and home rw, compiled ro, generated
     identifiers over a bare /etc, prlimit nproc inside, fsize and core outside."""
     meta = meta_load(attempt)
     setenvs = (("HOME", "/w/home"), ("PATH", "/usr/bin:/bin"),
@@ -1682,6 +1800,28 @@ def seat_model_of(attempt, manifest):
     return model
 
 
+def _repo_tracks(attempt, name):
+    """Whether the attempt's repository tracked `name` where it was built. The engine's
+    own answer, from build time: tracked.json is the stage repository's listing of the
+    start commit, taken before any worker existed, without the names the attempt hides
+    (hidden.json) -- what the attempt's own index holds. Never a git call: an attempt
+    driven again may hold a worker's .git, and git honours a repository's config (a
+    planted core.fsmonitor ran on the host through the call this replaces; measured).
+    The attempt's own files are the engine's: one that won't read is Void."""
+    try:
+        with open(os.path.join(attempt, "tracked.json"), encoding="utf-8") as f:
+            tracked = json.load(f)
+        with open(os.path.join(attempt, "hidden.json"), encoding="utf-8") as f:
+            hidden = set(json.load(f))
+    except (OSError, ValueError) as e:
+        raise Void(f"the attempt's own listing of its repository won't read ({e}); "
+                   "rebuild the attempt")
+    if not isinstance(tracked, list) or not all(isinstance(p, str) for p in tracked):
+        raise Void("the attempt's own listing of its repository isn't a list of paths; "
+                   "rebuild the attempt")
+    return any(p == name or p.startswith(name + "/") for p in tracked if p not in hidden)
+
+
 def adapter_prepare(attempt, manifest, broker):
     """Manifest-driven layout before the run: directories that must exist
     (CODEX_HOME; a dangling path is a hard error), the repo-level config some
@@ -1750,10 +1890,10 @@ def adapter_prepare(attempt, manifest, broker):
     if body:
         name = manifest.get("repo_config", "opencode.json")
         # F8: a repo that tracks its own copy would be dirtied by the engine's
-        # render (the broker URL) before the run -- refuse and name it
-        tracked = subprocess.run(["git", "-C", repo, "ls-files", "--", name],
-                                 capture_output=True, text=True, env=engine_env())
-        if tracked.returncode == 0 and tracked.stdout.strip():
+        # render (the broker URL) before the run -- refuse and name it. Asked of
+        # the build's own listing, never of the attempt's repository: git does
+        # not run here (_repo_tracks)
+        if _repo_tracks(attempt, name):
             raise Refused(f"the repo tracks {name}; the engine plants its own "
                           f"(the broker address must be ours, not the program's) "
                           "-- remove the tracked file or rename it out of the "
@@ -2941,6 +3081,66 @@ def contextlib_redirect():
     return contextlib.redirect_stdout(io.StringIO())
 
 
+# where engine git lives, and on what: the delivery invariant's static half.
+# A function of this module outside GIT_FUNCTIONS runs no git at all; one of
+# GIT_PARENT_FUNCTIONS runs it after the build on the run's parent only (a raw
+# call's -C names parent, a helper is called with it). The build's own functions
+# (hidden_names, build_attempt, cmd_init_run) run it on repositories the engine
+# is making, before any worker exists. A function that runs after a worker's
+# turn asks git nothing, because from then on an attempt's .git may be a
+# worker's and git honours a repository's config. The selftest holds this
+# (git_calls_outside); test/planted-hook-walk.sh's re-drive leg measures it.
+GIT_FUNCTIONS = ("egit", "egit_ok", "egit_bytes", "hidden_names", "build_attempt",
+                 "compose_brief", "_tree_read", "_import_gate", "_candidate", "_promote",
+                 "_reject", "cmd_init_run",
+                 # the suites' own fixtures and arms
+                 "selftest", "first_level", "_stage", "_commit", "_world", "_seal_room",
+                 "_forge")
+GIT_PARENT_FUNCTIONS = ("compose_brief", "_tree_read", "_import_gate", "_candidate",
+                        "_promote", "_reject")
+
+
+def git_calls_outside(source, allowed, parent_only=()):
+    """Every call in `source` (this module) that runs git where it may not, as
+    (function, line) pairs: a call in a top-level function outside `allowed`, or
+    -- in a function of `parent_only` -- one that doesn't run on the run's parent
+    (a raw call's -C names parent, a helper is called with it). Git is one of the
+    three engine git helpers, or a subprocess whose literal argv begins with git.
+    An argv assembled elsewhere is not seen; the launcher's own is bwrap's, from
+    jail.py."""
+    import ast
+    out = []
+    for fn in ast.parse(source).body:
+        if not isinstance(fn, ast.FunctionDef):
+            continue
+        for call in ast.walk(fn):
+            if not isinstance(call, ast.Call):
+                continue
+            head, args = call.func, call.args
+            helper = isinstance(head, ast.Name) and head.id in ("egit", "egit_ok", "egit_bytes")
+            raw = (isinstance(head, ast.Attribute) and isinstance(head.value, ast.Name)
+                   and head.value.id == "subprocess" and bool(args)
+                   and isinstance(args[0], (ast.List, ast.Tuple)) and args[0].elts
+                   and isinstance(args[0].elts[0], ast.Constant)
+                   and args[0].elts[0].value == "git")
+            if not (helper or raw):
+                continue
+            if fn.name not in allowed:
+                out.append((fn.name, call.lineno))
+            elif fn.name in parent_only:
+                if helper:
+                    on_parent = isinstance(args[0], ast.Name) and args[0].id == "parent"
+                else:
+                    els = args[0].elts
+                    at = next((i for i, e in enumerate(els[:-1])
+                               if isinstance(e, ast.Constant) and e.value == "-C"), None)
+                    on_parent = at is not None and isinstance(els[at + 1], ast.Name) \
+                        and els[at + 1].id == "parent"
+                if not on_parent:
+                    out.append((fn.name, call.lineno))
+    return out
+
+
 def selftest():
     """Room-safe: the loaders, the layout, the gate, candidate/promote/reject, the
     first steps, compose and the stream reader, on fixtures and engine git only. No
@@ -3937,23 +4137,105 @@ def selftest():
                 with open(os.path.join(prog, "team.toml"), "w") as f:
                     f.write(tk7)
                 shutil.rmtree(sk3, ignore_errors=True)
-            # F8: a repo that tracks the CLI's config file refuses the plant.
-            # (opencode.json itself sits in the engine's droppings exclude, so
-            # a repo can't track it -- the arm uses a config name that isn't
-            # excluded, which is the same refusal.)
+            # F8: a repo that tracks the CLI's config file refuses the plant --
+            # asked of the build's own listing, so a base commit that tracks the
+            # config is what refuses. (opencode.json is an instruction name: an
+            # attempt hides it unless a grant names it, so the arm's first config
+            # is a name nothing hides; the hidden twin is the other half of the
+            # old answer: a repo that ships its own opencode.json still turns on
+            # opencode.)
+            rd_tr, _, _ = _world(home, "w2tracks", {"src/a.py": "v=1\n", "settings.json": "{}\n",
+                                                    "opencode.json": '{"model": "theirs"}\n'})
+            aw_tr = build_attempt(rd_tr, "w", ["src/**"], "integration/R", "c8-tracked", "impl",
+                                  prog, ["w", "r"])
             m_tr = dict(m_oc, repo_config="settings.json",
                         repo_config_body='{"broker": "{BROKER_V1}"}')
-            with open(os.path.join(aw8, "repo", "settings.json"), "w") as f:
-                f.write("{}\n")
-            egit_ok(os.path.join(aw8, "repo"), "add", "settings.json")
             try:
-                adapter_prepare(aw8, m_tr, BROKER)
+                adapter_prepare(aw_tr, m_tr, BROKER)
                 check(False, "H3 a tracked config refuses the plant")
             except Refused as e:
                 check("tracks settings.json" in str(e), f"H3 names the conflict: {e}")
-            subprocess.run(["git", "-C", os.path.join(aw8, "repo"), "rm", "-q",
-                            "--cached", "settings.json"],
-                           capture_output=True, env=engine_env())
+            with open(os.path.join(aw_tr, "repo", "settings.json"), encoding="utf-8") as f:
+                kept_tr = f.read()
+            check(kept_tr == "{}\n",
+                  "H3 the refusal plants nothing over a tracked file: it is still the repo's")
+            check(not os.path.lexists(os.path.join(aw_tr, "repo", "opencode.json")) and
+                  adapter_prepare(aw_tr, m_oc, BROKER) == ["opencode.json"] and
+                  os.path.isfile(os.path.join(aw_tr, "repo", "opencode.json")),
+                  "H3 a tracked config the attempt hides is not the attempt's: the plant lands")
+            aw_tr2 = build_attempt(rd_tr, "w", ["src/**", "opencode.json"], "integration/R",
+                                   "c8-tracked2", "impl", prog, ["w", "r"])
+            try:
+                adapter_prepare(aw_tr2, m_oc, BROKER)
+                check(False, "H3 a tracked config the grant keeps visible refuses the plant")
+            except Refused as e:
+                check("tracks opencode.json" in str(e), f"H3 the visible twin refuses: {e}")
+            for a_ in (aw_tr, aw_tr2):
+                shutil.rmtree(a_, ignore_errors=True)
+            # the delivery invariant, measured in the room: after the build the
+            # engine asks an attempt's repository nothing. A plant that fires
+            # wherever git runs in that repository (the control) leaves no trace
+            # when adapter_prepare asks whether the config is tracked
+            cfg_p = os.path.join(aw8, "repo", ".git", "config")
+            with open(cfg_p, encoding="utf-8") as f:
+                cfg_keep = f.read()
+            fired = os.path.join(base, "fsmonitor.fired")
+            with open(cfg_p, "a", encoding="utf-8") as f:
+                f.write(f"\n[core]\n\tfsmonitor = sh -c 'touch {fired}'\n")
+            subprocess.run(["git", "-C", os.path.join(aw8, "repo"), "ls-files", "--",
+                            "opencode.json"], capture_output=True, env=engine_env())
+            check(os.path.isfile(fired),
+                  "H3 the control: git run in that repository on this host fires the plant")
+            if os.path.exists(fired):
+                os.unlink(fired)
+            with contextlib_redirect():
+                adapter_prepare(aw8, m_oc, BROKER)
+            check(not os.path.exists(fired),
+                  "H3 adapter_prepare runs no git in the attempt: the plant left no trace")
+            with open(cfg_p, "w", encoding="utf-8") as f:
+                f.write(cfg_keep)
+            aw_nv = build_attempt(rd_tr, "w", ["src/**"], "integration/R", "c8-nolisting",
+                                  "impl", prog, ["w", "r"])
+            os.unlink(os.path.join(aw_nv, "tracked.json"))
+            try:
+                with contextlib_redirect():
+                    adapter_prepare(aw_nv, m_oc, BROKER)
+                check(False, "H3 an attempt without its own listing is Void, never planted over")
+            except Void as e:
+                check("rebuild" in str(e), f"H3 the missing listing names its fix: {e}")
+            shutil.rmtree(aw_nv, ignore_errors=True)
+            shutil.rmtree(rd_tr, ignore_errors=True)
+            # G-git the delivery invariant's static half: engine git lives only
+            # where GIT_FUNCTIONS says, and after the build on the run's parent
+            # only (GIT_PARENT_FUNCTIONS), so no function that runs after a
+            # worker's turn asks git anything of an attempt. Its control: each
+            # forbidden shape is seen
+            with open(os.path.join(ROOT, "bin", "spawn.py"), encoding="utf-8") as f:
+                own_src = f.read()
+            stray = git_calls_outside(own_src, GIT_FUNCTIONS, GIT_PARENT_FUNCTIONS)
+            check(not stray, f"G-git engine git only where the law says: {stray[:4]}")
+            probe_src = ("import subprocess\n"
+                         "def raw(repo):\n"
+                         "    subprocess.run(['git', '-C', repo, 'status'])\n"
+                         "def popped(repo):\n"
+                         "    subprocess.Popen(('git', '-C', repo), capture_output=True)\n"
+                         "def asked(repo):\n"
+                         "    egit_ok(repo, 'status')\n"
+                         "def listed(repo):\n"
+                         "    egit_bytes(repo, 'status')\n"
+                         "def other(repo):\n"
+                         "    subprocess.run(['tar', '-c', repo])\n"
+                         "def fine(repo):\n"
+                         "    subprocess.run(['git', '-C', repo])\n"
+                         "def gate(attempt, parent):\n"
+                         "    subprocess.run(['git', '-C', attempt, 'status'])\n"
+                         "    egit(attempt, 'status')\n")
+            seen = [n for n, _ in git_calls_outside(probe_src, {"fine", "gate"}, ("gate",))]
+            check(seen == ["raw", "popped", "asked", "listed", "gate", "gate"],
+                  f"G-git the scan sees each forbidden shape, and only those: {seen}")
+            check(not git_calls_outside(probe_src, {"fine", "gate", "raw", "popped", "asked",
+                                                    "listed", "other"}),
+                  "G-git a function the law allows, on any repository, is no finding")
         finally:
             os.environ.pop("OPERATOR_CREDENTIAL", None)
         # H4 P18's skills law: skills ride the repo, never the home dir
@@ -4672,6 +4954,231 @@ def selftest():
         check(nu_rc == 5 and nu_state.startswith("REFUSED non-utf8-path:") and not nu_ref_ok,
               f"Z6 non-UTF-8 path refused cleanly and attempt ref dropped: state={nu_state!r} rc={nu_rc}")
 
+        # R the read class (M2): the seat's read grant rides the attempt's meta
+        # from the ruled seat, and the jail builder takes nothing from the meta
+        # on trust -- where the jail is built, every path meets the law again,
+        # the charter must list it, and beside a network grant the newest arm
+        # ruling must carry the signed rule-of-two waiver
+        import ruling as ruling_mod
+        rd_ds = tempfile.mkdtemp(prefix="spawn-read.")       # a dataset on this host
+        rd_x = os.path.join(rd_ds, "x")
+        os.makedirs(rd_x)
+        with open(os.path.join(rd_x, "data.txt"), "w") as f:
+            f.write("READ-DATA\n")
+        os.symlink(rd_ds, os.path.join(rd_ds, "link"))
+        rd_adapters = os.path.join(base, "read-adapters")
+        os.makedirs(rd_adapters, exist_ok=True)
+        with open(os.path.join(rd_adapters, "stub.toml"), "w") as f:
+            f.write('schema = 2\nname = "stub"\ntested_classes = ["write", "read"]\nargv = ["true"]\n')
+        rd_prog = _program(home, "read-prog", team_body=
+                           'schema = 1\nname = "t"\nmax_parallel = 1\n[seat.w]\nrole = "roles/w.md"\n'
+                           'adapter = "stub"\nwrite = ["src/**"]\n'
+                           f'read = ["{rd_x}"]\n[seat.w.budget]\nusd = 12.0\n')
+        with open(os.path.join(rd_prog, "charter.toml"), "w") as f:
+            f.write('schema = 1\nname = "t"\n\n[reach]\n'
+                    f'read = ["{rd_x}"]\n')
+        keep_adapters = os.environ.get("OPERATOR_ADAPTERS")
+        os.environ["OPERATOR_ADAPTERS"] = rd_adapters
+        try:
+            rd_run, _, _ = _world(home, "read-run", {"src/a.py": "v=1\n"})
+            a_rd = build_attempt(rd_run, "w", ["src/**"], "integration/R", "read-1", "t1",
+                                 rd_prog, ["w", "r"])
+        finally:
+            if keep_adapters is None:
+                os.environ.pop("OPERATOR_ADAPTERS", None)
+            else:
+                os.environ["OPERATOR_ADAPTERS"] = keep_adapters
+        check(meta_load(a_rd).get("read") == [rd_x],
+              f"R the seat's read grant rides the attempt's meta: {meta_load(a_rd).get('read')}")
+        rd_argv = worker_argv(a_rd, ["/bin/sh", "-c", "true"], "/no-etc")
+        rd_i = rd_argv.index(rd_x) if rd_x in rd_argv else -1
+        check(rd_argv.count(rd_x) == 2 and rd_i > 0 and rd_argv[rd_i - 1] == "--ro-bind"
+              and rd_argv[rd_i + 1] == rd_x,
+              f"R the jail carries each read directory read-only, at its own path: "
+              f"{[a for a in rd_argv if 'spawn-read.' in a]}")
+
+        def read_jail(**fields):
+            """worker_argv for an attempt whose meta is exactly `fields`: the argv, or the refusal."""
+            ad = os.path.join(base, "read-meta")
+            os.makedirs(ad, exist_ok=True)
+            with open(os.path.join(ad, "attempt.json"), "w") as f:
+                json.dump({"id": "read-meta", "seat": "w", "grants": ["src/**"], "prog": rd_prog,
+                           **fields}, f)
+            try:
+                return worker_argv(ad, ["/bin/sh", "-c", "true"], "/no-etc")
+            except Refused as e:
+                return f"REFUSED {e}"
+
+        r_argv = read_jail(read=[rd_x])
+        check(r_argv.count(rd_x) == 2 and "REFUSED" not in str(r_argv),
+              f"R a listed directory binds with no ruling asked: {str(r_argv)[:120]}")
+        for fields, why, label in [
+            ({"read": [rd_ds]}, "isn't inside the charter's directories",
+             "R a directory the charter doesn't list refuses at the jail"),
+            ({"read": [os.path.join(rd_ds, "link", "x")]}, "has a link on its path",
+             "R a link on the path refuses at the jail"),
+            ({"read": [os.path.join(rd_ds, "absent")]}, "isn't a directory on this host",
+             "R a directory that isn't there refuses at the jail"),
+            ({"read": [42]}, "is not a path", "R anything but a path refuses"),
+            ({"read": [rd_x], "prog": None}, "needs the program directory",
+             "R a read grant with no program refuses"),
+            ({"read": [rd_x], "network": ["pypi.org"]}, "rule-of-two",
+             "R read beside network refuses without the signed waiver"),
+        ]:
+            r_jail = read_jail(**fields)
+            check(isinstance(r_jail, str) and r_jail.startswith("REFUSED") and why in r_jail,
+                  f"{label}: {str(r_jail)[:200]}")
+        with contextlib_redirect():
+            ruling_mod.sign(rd_prog, "arm", None, k)
+        r_jail = read_jail(read=[rd_x], network=["pypi.org"])
+        check(isinstance(r_jail, str) and "rule-of-two" in r_jail,
+              f"R an arm ruling signed without the waiver is no waiver: {str(r_jail)[:160]}")
+        with contextlib_redirect():
+            ruling_mod.sign(rd_prog, "arm", None, k, waivers=["rule-of-two"])
+        r_jail = read_jail(read=[rd_x], network=["pypi.org"])
+        check(r_jail.count(rd_x) == 2 and "REFUSED" not in str(r_jail),
+              f"R the signed waiver opens read beside network: {str(r_jail)[:120]}")
+        check(read_jail(read=[rd_x]) == r_jail, "R the same waiver leaves a read-only seat as it was")
+
+        # R-ro the older seat key ro: beside a network grant it is the same
+        # exfiltration path (a worker that reads a host path and talks to the
+        # network), so the same door asks for the same signed waiver
+        # (rule_of_two). What ro binds on its own does not change, and it is
+        # still not the read class: no charter and no path law here
+        ro_alone = read_jail(ro=[rd_x])
+        check(ro_alone.count(rd_x) == 2 and "REFUSED" not in str(ro_alone),
+              f"R-ro an ro path binds alone, no ruling asked: {str(ro_alone)[:120]}")
+        with contextlib_redirect():
+            ruling_mod.sign(rd_prog, "arm", None, k)
+        r_jail = read_jail(ro=[rd_x], network=["pypi.org"])
+        check(isinstance(r_jail, str) and r_jail.startswith("REFUSED") and
+              "an ro path" in r_jail and "rule-of-two" in r_jail,
+              f"R-ro ro beside network refuses without the signed waiver: {str(r_jail)[:200]}")
+        r_jail = read_jail(ro=[rd_x], network=["pypi.org"], prog=None)
+        check(isinstance(r_jail, str) and "needs the program directory" in r_jail,
+              f"R-ro ro beside network with no program refuses, the waiver named: {str(r_jail)[:200]}")
+        with contextlib_redirect():
+            ruling_mod.sign(rd_prog, "arm", None, k, waivers=["rule-of-two"])
+        r_jail = read_jail(ro=[rd_x], network=["pypi.org"])
+        check(r_jail.count(rd_x) == 2 and "REFUSED" not in str(r_jail),
+              f"R-ro the signed waiver opens ro beside network: {str(r_jail)[:120]}")
+        check(read_jail(ro=[rd_x]) == ro_alone, "R-ro the waiver leaves an ro-only seat as it was")
+        r_jail = read_jail(ro=[rd_x], read=[rd_x], network=["pypi.org"])
+        check(r_jail.count(rd_x) == 4 and "REFUSED" not in str(r_jail),
+              f"R-ro ro and read beside network: the one waiver covers both: {str(r_jail)[:120]}")
+        shutil.rmtree(rd_ds, ignore_errors=True)
+
+        # S-clone the writable clone (M2): asked for by the seat's shell grant and
+        # earned by the adapter's manifest, both held again where the jail is
+        # built; the worker's jail only. A seat that does not ask keeps the
+        # read-only .git it always had
+        cl_adapters = os.path.join(base, "clone-adapters")
+        os.makedirs(cl_adapters, exist_ok=True)
+        for nm_c, classes_c in (("proven", ["write", "shell"]), ("unproven", ["write"])):
+            with open(os.path.join(cl_adapters, nm_c + ".toml"), "w") as f:
+                f.write(f'schema = 2\nname = "{nm_c}"\ntested_classes = {classes_c}\nargv = ["true"]\n')
+        keep_cl = os.environ.get("OPERATOR_ADAPTERS")
+        os.environ["OPERATOR_ADAPTERS"] = cl_adapters   # the door reads it when the jail is built
+        try:
+            clones = {}
+            for key_c, extra_c, adapter_c in (("quiet", "", "proven"), ("earned", 'shell = ["*"]\n', "proven"),
+                                              ("unearned", 'shell = ["*"]\n', "unproven"),
+                                              ("nomanifest", 'shell = ["*"]\n', "nothing-ships-this"),
+                                              ("dotgit", 'shell = ["*"]\n', "proven")):
+                prog_c = _program(home, f"p-clone-{key_c}",
+                                  team_body='schema = 1\nname = "t"\nmax_parallel = 1\n[seat.w]\n'
+                                            'role = "roles/w.md"\n'
+                                            f'adapter = "{adapter_c}"\nwrite = ["src/**"]\n{extra_c}')
+                rd_c, _, _ = _world(home, f"w-clone-{key_c}", {"src/a.py": "v=1\n"})
+                # the last seat asks to deliver its own .git: a legal grant
+                grants_c = [".git/**", "src/**"] if key_c == "dotgit" else ["src/**"]
+                clones[key_c] = build_attempt(rd_c, "w", grants_c, "integration/R", f"clone-{key_c}",
+                                              "r1", prog_c, ["w", "r"])
+
+            def repo_flag(adir, repo_rw=True):
+                """The jail's binds for the repository and its .git: (flag, source) pairs."""
+                flat = jail_binds_for(adir, os.path.join(base, "no-etc"), repo_rw=repo_rw)
+                return [(flat[k], flat[k + 1]) for k in range(0, len(flat) - 2, 3)
+                        if flat[k + 1].endswith("/repo") or flat[k + 1].endswith("/repo/.git")]
+
+            def as_yesterday(adir):
+                r_c = os.path.join(adir, "repo")
+                return [("--bind", r_c), ("--ro-bind", os.path.join(r_c, ".git"))]
+
+            check(repo_flag(clones["quiet"]) == as_yesterday(clones["quiet"]),
+                  "S-clone a seat that does not ask keeps the read-only .git")
+            check(repo_flag(clones["earned"]) == [("--bind", os.path.join(clones["earned"], "repo"))],
+                  f"S-clone shell on an adapter that earned the class: the repository binds once, "
+                  f".git with it: {repo_flag(clones['earned'])}")
+            for key_c, label_c in (("unearned", "an adapter that has not earned the class"),
+                                   ("nomanifest", "an adapter with no manifest")):
+                check(repo_flag(clones[key_c]) == as_yesterday(clones[key_c]),
+                      f"S-clone shell on {label_c}: no clone, the jail as yesterday")
+            r_c = os.path.join(clones["earned"], "repo")
+            check(repo_flag(clones["earned"], repo_rw=False) ==
+                  [("--ro-bind", r_c), ("--ro-bind", os.path.join(r_c, ".git"))],
+                  "S-clone a review turn's repository is read-only whole, clone or not")
+            meta_q = meta_load(clones["quiet"])
+            _dump_meta(clones["quiet"], {**meta_q, "shell": ["*"]})
+            check(repo_flag(clones["quiet"]) == as_yesterday(clones["quiet"]),
+                  "S-clone the meta's word alone opens nothing: the ruled seat asks")
+            _dump_meta(clones["quiet"], meta_q)
+            # never delivered, under the grant that asks for it: what the worker
+            # puts into its .git -- a branch holding a blob no work tree shows, a
+            # hook, a config command -- stays there. The seal stages the work
+            # tree into a git directory of its own (_seal_room is its room-safe
+            # twin), and git matches no path inside a work tree's .git. So the
+            # delivered tree holds no .git path and the parent never learns the
+            # side branch. The fixture's own git makes the branch first; from the
+            # moment the plants are in, no git of this host may run in the clone
+            # until the control does, on purpose
+            a_cl = clones["dotgit"]
+            r_ap = os.path.join(a_cl, "repo")
+            fired_cl = os.path.join(base, "clone-fired")
+            blob_cl = subprocess.run(["git", "-C", r_ap, "hash-object", "-w", "--stdin"],
+                                     input="SIDE-BRANCH-ONLY-7e2\n", capture_output=True, text=True,
+                                     env=engine_env()).stdout.strip()
+            tree_cl = subprocess.run(["git", "-C", r_ap, "mktree"],
+                                     input=f"100644 blob {blob_cl}\tside-only.txt\n", capture_output=True,
+                                     text=True, env=engine_env()).stdout.strip()
+            side_cl = egit(r_ap, "commit-tree", tree_cl, "-m", "side", commit=True).strip()
+            subprocess.run(["git", "-C", r_ap, "update-ref", "refs/heads/side", side_cl],
+                           capture_output=True, env=engine_env(), check=True)
+            with open(os.path.join(r_ap, "src", "a.py"), "w") as f:
+                f.write("v=2\n")
+            hook_cl = os.path.join(r_ap, ".git", "hooks", "post-index-change")
+            with open(hook_cl, "w") as f:
+                f.write(f"#!/bin/sh\ntouch {fired_cl}\n")
+            os.chmod(hook_cl, 0o755)
+            with open(os.path.join(r_ap, ".git", "config"), "a") as f:
+                f.write(f"\n[core]\n\tfsmonitor = sh -c 'touch {fired_cl}'\n")
+            with contextlib_redirect():
+                _seal_room(a_cl)
+            sealed_cl = not os.path.exists(fired_cl)
+            gate_cl = import_gate(a_cl)[0]
+            check(sealed_cl and not os.path.exists(fired_cl),
+                  "S-clone the room-safe seal and the gate run no git of the clone's")
+            check(gate_cl == "OK", f"S-clone the work tree delivers through the gate: {gate_cl}")
+            deliv_cl = egit(parent_of(a_cl), "ls-tree", "-r", "--name-only",
+                            "refs/attempts/clone-dotgit").split()
+            check("src/a.py" in deliv_cl and not any(p == ".git" or p.startswith(".git/") for p in deliv_cl),
+                  f"S-clone the delivered tree holds the work and no .git path, under the grant "
+                  f"that asks for it: {deliv_cl}")
+            has_side, _ = egit_ok(parent_of(a_cl), "cat-file", "-e", f"{side_cl}^{{commit}}")
+            has_blob, _ = egit_ok(parent_of(a_cl), "cat-file", "-e", blob_cl)
+            check(not has_side and not has_blob,
+                  "S-clone the parent never learns the clone's side branch or its blob")
+            subprocess.run(["git", "-C", r_ap, "add", "-A"], capture_output=True, env=engine_env())
+            check(os.path.exists(fired_cl),
+                  "S-clone the control: git run in the clone on this host fires its plants")
+            if os.path.exists(fired_cl):
+                os.unlink(fired_cl)
+        finally:
+            if keep_cl is None:
+                os.environ.pop("OPERATOR_ADAPTERS", None)
+            else:
+                os.environ["OPERATOR_ADAPTERS"] = keep_cl
+
         print(f"selftest: OK ({ok[0]} checks)" if ok[0] and not bad[0] else "selftest: FAIL")
         return 0 if ok[0] and not bad[0] else 1
     finally:
@@ -5004,6 +5511,53 @@ def first_level():
                   "H8 the seat's ro data path crosses read-only at its own path")
             import shutil as _sh8b
             _sh8b.rmtree(h8models, ignore_errors=True)
+            # H8b the read class in a real jail (M2): a seat's read directory
+            # crosses read-only at its own path, and nothing beside it does --
+            # not the directory above, not a sibling, not through `..` or a link
+            fl_ds = tempfile.mkdtemp(prefix="fl-read.")
+            fl_x = os.path.join(fl_ds, "x")
+            os.makedirs(fl_x)
+            os.makedirs(os.path.join(fl_ds, "x2"))
+            for rel, text in (("x/data.txt", "H8B-READ-DATA\n"), ("outside.txt", "H8B-OUTSIDE\n"),
+                              ("x2/outside.txt", "H8B-OUTSIDE\n")):
+                with open(os.path.join(fl_ds, rel), "w") as f:
+                    f.write(text)
+            os.symlink(os.path.join(fl_ds, "outside.txt"), os.path.join(fl_x, "link-out"))
+            fl_adapters = os.path.join(base, "fl-read-adapters")
+            os.makedirs(fl_adapters, exist_ok=True)
+            with open(os.path.join(fl_adapters, "stub.toml"), "w") as f:
+                f.write('schema = 2\nname = "stub"\ntested_classes = ["write", "read"]\nargv = ["true"]\n')
+            prog_rd = _program(home, "h8bprog", team_body=
+                               'schema = 1\nname = "t"\nmax_parallel = 1\n'
+                               '[seat.w]\nrole = "roles/w.md"\nadapter = "stub"\n'
+                               f'write = ["src/**"]\nread = ["{fl_x}"]\n'
+                               '[seat.w.budget]\nusd = 12.0\n')
+            with open(os.path.join(prog_rd, "charter.toml"), "w") as f:
+                f.write('schema = 1\nname = "t"\n\n[reach]\n'
+                        f'read = ["{fl_x}"]\n')
+            keep_fl = os.environ.get("OPERATOR_ADAPTERS")
+            os.environ["OPERATOR_ADAPTERS"] = fl_adapters
+            try:
+                a_rd = build_attempt(rd, "w", ["src/**"], "integration/R",
+                                     "h8-read", "impl", prog_rd, ["w", "r"])
+            finally:
+                if keep_fl is None:
+                    os.environ.pop("OPERATOR_ADAPTERS", None)
+                else:
+                    os.environ["OPERATOR_ADAPTERS"] = keep_fl
+            worker(a_rd, ["/bin/sh", "-c",
+                          f"cat {fl_x}/data.txt; touch {fl_x}/w 2>/dev/null && echo WROTE-READ "
+                          "|| echo READ-ONLY-OK; "
+                          f"for p in {fl_ds}/outside.txt {fl_ds}/x2/outside.txt "
+                          f"{fl_x}/../outside.txt {fl_x}/link-out; do "
+                          'if [ -r "$p" ]; then echo "LEAK $(cat "$p")"; else echo ABSENT; fi; done'],
+                   timeout=120)
+            t_rd = out(a_rd)
+            check("H8B-READ-DATA" in t_rd and "READ-ONLY-OK" in t_rd and "WROTE-READ" not in t_rd
+                  and "LEAK" not in t_rd and t_rd.count("ABSENT") == 4,
+                  f"H8b the seat's read directory crosses read-only at its own path, and nothing "
+                  f"beside it: {t_rd[-300:]!r}")
+            _sh8b.rmtree(fl_ds, ignore_errors=True)
             # H9 an adapter may name its OWN broker (broker_env): the smart
             # reviewer rides one provider while the workers ride another --
             # the named socket binds into that adapter's attempts alone, and
@@ -5092,6 +5646,85 @@ def first_level():
         t = out(a)
         check("ADD-OK" not in t and "CFG-OK" not in t and "GIT-KEPT" in t,
               f"A read-only .git: {t[:200]}")
+
+        # S-clone the writable clone in a real jail (M2): a seat that asks
+        # (shell) on an adapter that earned the class writes its .git from
+        # inside the jail -- a branch, a worktree of its own, a side branch
+        # holding a blob no work tree shows, and the plant zoo -- and delivers
+        # its work tree through the real seal and the gate. Nothing fires on
+        # the host, no .git path is delivered, and the parent never learns the
+        # side branch. The same turn in yesterday's jail (no shell grant)
+        # cannot write .git at all. The plants go in last: a planted
+        # reference-transaction hook that cannot write its marker would abort
+        # the worker's own ref updates inside the jail
+        fl_adapters = os.path.join(base, "clone-adapters")
+        os.makedirs(fl_adapters, exist_ok=True)
+        with open(os.path.join(fl_adapters, "proven.toml"), "w") as f:
+            f.write('schema = 2\nname = "proven"\ntested_classes = ["write", "shell"]\nargv = ["true"]\n')
+        keep_fl = os.environ.get("OPERATOR_ADAPTERS")
+        os.environ["OPERATOR_ADAPTERS"] = fl_adapters   # the door reads it when the jail is built
+        try:
+            def clone_attempt_fl(aid, extra):
+                prog_fl = _program(home, f"fl-clone-{aid}", team_body=
+                                   'schema = 1\nname = "t"\nmax_parallel = 1\n[seat.w]\n'
+                                   'role = "roles/w.md"\nadapter = "proven"\nwrite = ["src/**"]\n'
+                                   + extra)
+                return build_attempt(rd, "w", ["src/**"], "integration/R", aid, None, prog_fl, ["w", "r"])
+
+            a_yes = clone_attempt_fl("a-clone-yes", 'shell = ["*"]\n')
+            a_no = clone_attempt_fl("a-clone-no", "")
+            marks = os.path.join(base, "clone-host")
+            os.makedirs(marks, exist_ok=True)
+            with open(os.path.join(ROOT, "test", "lib", "plant-hooks.sh"), encoding="utf-8") as f:
+                zoo_fl = f.read()
+            turn_fl = ("set -eu\n"
+                       'git checkout -q -b feature/x && echo BRANCH-OK\n'
+                       'git worktree add -q -b wt "$HOME/wt" 2>/dev/null && [ -f "$HOME/wt/.git" ] '
+                       '&& echo WORKTREE-OK\n'
+                       'echo "SIDE-BRANCH-ONLY-4d8b" > "$HOME/side.txt"\n'
+                       'b=$(git hash-object -w "$HOME/side.txt")\n'
+                       't=$(printf "100644 blob %s\\tside-only.txt\\n" "$b" | git mktree)\n'
+                       'c=$(git -c user.email=a@x -c user.name=a commit-tree "$t" -m side)\n'
+                       'git update-ref refs/heads/side "$c" && echo "$c" > src/side-sha.txt\n'
+                       'echo clone-ok-6f21 > src/clone-ok.txt\n'
+                       + zoo_fl)
+            worker(a_yes, ["/bin/sh", "-c", turn_fl, "sh", ".", marks])
+            t = out(a_yes)
+            check("BRANCH-OK" in t and "WORKTREE-OK" in t,
+                  f"S-clone in the jail: the worker branches and adds a worktree of its own: {t[-300:]}")
+            worker(a_no, ["/bin/sh", "-c", turn_fl, "sh", ".", marks])
+            t = out(a_no)
+            check("BRANCH-OK" not in t and "WORKTREE-OK" not in t,
+                  f"S-clone the same turn in yesterday's jail (no shell grant) cannot write .git: {t[-300:]}")
+            for m_fl in ("HOOK-RAN", "CFG-RAN"):
+                check(not os.path.exists(os.path.join(marks, m_fl)),
+                      f"S-clone no {m_fl} on the host after the two turns")
+            check(seal(a_yes) == "sealed", "S-clone the clone's work tree seals through the real seal jail")
+            check(import_gate(a_yes)[0] == "OK", "S-clone the clone's work tree passes the gate")
+            for m_fl in ("HOOK-RAN", "CFG-RAN"):
+                check(not os.path.exists(os.path.join(marks, m_fl)),
+                      f"S-clone no {m_fl} on the host after the seal and the gate")
+            tree_fl = egit(parent, "ls-tree", "-r", "--name-only", "refs/attempts/a-clone-yes").split()
+            check("src/clone-ok.txt" in tree_fl and not any(p == ".git" or p.startswith(".git/") for p in tree_fl),
+                  f"S-clone the delivered tree holds the work and no .git path: {tree_fl}")
+            with open(os.path.join(a_yes, "repo", "src", "side-sha.txt"), encoding="utf-8") as f:
+                side_fl = f.read().strip()
+            has_side_fl = re.fullmatch(r"[0-9a-f]{40}", side_fl) and \
+                egit_ok(parent, "cat-file", "-e", f"{side_fl}^{{commit}}")[0]
+            check(bool(side_fl) and not has_side_fl,
+                  "S-clone the parent never learns the side branch the worker committed in the clone")
+            for m_fl in ("HOOK-RAN", "CFG-RAN"):
+                check(not os.path.exists(os.path.join(marks, m_fl)),
+                      f"S-clone no {m_fl} on the host after the control's own reads")
+            subprocess.run(["git", "-C", os.path.join(a_yes, "repo"), "add", "-A"], capture_output=True)
+            check(all(os.path.exists(os.path.join(marks, m_fl)) for m_fl in ("HOOK-RAN", "CFG-RAN")),
+                  "S-clone the control: the plants the worker wrote from its jail are live where git "
+                  "runs in the clone on this host")
+        finally:
+            if keep_fl is None:
+                os.environ.pop("OPERATOR_ADAPTERS", None)
+            else:
+                os.environ["OPERATOR_ADAPTERS"] = keep_fl
         worker(a, ["/bin/sh", "-c",
                    'echo y > /tmp/t; echo "t=$?"; echo z > /dev/shm/s; echo "s=$?"; '
                    'echo o > /w/out/o; echo "o=$?"; echo h > "$HOME/h"; echo "h=$?"; '

@@ -5,11 +5,15 @@
 # required filter, a diff driver). Each appends to <marker-dir>/HOOK-RAN or
 # CFG-RAN wherever it runs. The paths are absolute, so a plant fires on the
 # host only when git runs in that repository on the host.
+# It may run INSIDE the worker's jail too (a real turn plants its own .git):
+# the marker directory is then a host path the jail cannot make, which is the
+# point -- the plants fire nowhere until git runs in that repository on the host.
 # Git reads ';' and '#' in a config value as a comment: one statement per value.
 set -eu
 repo=$1
 marks=$2
-mkdir -p "$marks" "$repo/.git/hooks" "$repo/.githooks"
+mkdir -p "$repo/.git/hooks" "$repo/.githooks"
+mkdir -p "$marks" 2>/dev/null || true
 for h in pre-commit commit-msg post-commit post-checkout post-merge pre-merge-commit \
          post-index-change reference-transaction pre-auto-gc post-rewrite \
          prepare-commit-msg pre-rebase sendpack-validate fsmonitor-watchman \

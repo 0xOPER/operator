@@ -288,8 +288,8 @@ NEUTERS = [
     ("SP-admitgate", SP, "demands = [g for g in team_mod.GRANT_KEYS if g != \"model\" and s.get(g)]",
      "demands = []"),
     ("SP-repoconflict", SP,
-     "if tracked.returncode == 0 and tracked.stdout.strip():",
-     "if False and tracked.returncode == 0 and tracked.stdout.strip():"),
+     '        if _repo_tracks(attempt, name):\n',
+     '        if False:\n'),
     ("SP-preflight-bound", SP, 'if want and re.search(rf"(?<!\\d){re.escape(want)}(?!\\d)", got):',
      "if want and want in got:"),
     ("SP-brokersub", SP, 'env = {k: v.replace("{BROKER}", broker) for k, v in env.items()}',
@@ -373,8 +373,8 @@ NEUTERS = [
      "text = data.decode('utf-8', 'replace')"),
     ("RN-status-unfired", "bin/run.py", 'state = "unfired"', 'state = run.get("state", "running")'),
     # spawn.py: the jail arms (first level)
-    ("SP-jail-git-ro", SP, '("--ro-bind", os.path.join(attempt, "repo", ".git"), "/w/repo/.git"),',
-     '("--bind", os.path.join(attempt, "repo", ".git"), "/w/repo/.git"),', SPF),
+    ("SP-jail-git-ro", SP, '("--ro-bind", os.path.join(attempt, "repo", ".git"), "/w/repo/.git")]',
+     '("--bind", os.path.join(attempt, "repo", ".git"), "/w/repo/.git")]', SPF),
     ("SP-jail-nproc", SP, '["prlimit", f"--nproc={nproc}", f"--as={as_cap()}", *cmd])',
      '["prlimit", f"--as={as_cap()}", *cmd])', SPF),
     ("SP-jail-fsize", SP, 'return (["prlimit", f"--fsize={FSIZE}", "--core=0"] +',
@@ -742,8 +742,8 @@ NEUTERS = [
      '    if not meta.get("gpu"):\n        return []',
      '    if True:\n        return []', SPF),
     ("SP-seat-ro", SP,
-     '    for r in meta.get("ro") or []:\n        flat += ["--ro-bind", r, r]',
-     '    for r in []:\n        flat += ["--ro-bind", r, r]', SPF),
+     '    flat += ro_binds(attempt, meta)\n',
+     '    pass\n', SPF),
     ("TM-seat-flags", TM,
      '                for p in (v, real):\n'
      '                    if any(p == q or p.startswith(q + "/") for q in JAIL_OWNED):\n'
@@ -1979,4 +1979,139 @@ NEUTERS = [
     ("TM-shell-shape", 'bin/team.py',
      '            if v != "*" and not re.fullmatch(r"[A-Za-z0-9_./-][A-Za-z0-9_./ -]{0,63}( \\*)?", v):',
      '            if False and not re.fullmatch(r"[A-Za-z0-9_./-][A-Za-z0-9_./ -]{0,63}( \\*)?", v):'),
+
+    # --- the read class (M2): host directories the charter lists, bound read-only at
+    # their own path -- the path law (environment.py), the charter's list (reach.py,
+    # team.py), and the door where every worker jail is built (spawn.py) ---
+    ('EN-read-mountlaw', 'bin/environment.py',
+     '    why = mount_refusal(host, roots)\n    if why:\n        return why\n    p = os.path.normpath(host)\n',
+     '    p = os.path.normpath(host)\n'),
+    ('EN-read-holds-root', 'bin/environment.py',
+     '        if root.startswith(p + "/"):\n',
+     '        if False:\n'),
+    ('EN-read-credential', 'bin/environment.py',
+     '        if (part,) in CREDENTIAL_DIRS or (i and tuple(parts[i - 1:i + 1]) in CREDENTIAL_DIRS):\n',
+     '        if False:\n'),
+    ('EN-read-home', 'bin/environment.py',
+     '        if home == p or home.startswith(p + "/"):\n',
+     '        if False:\n'),
+    ('EN-read-other-home', 'bin/environment.py',
+     '        if uid != me and p.startswith(home + "/"):\n',
+     '        if False:\n'),
+    ('EN-read-link', 'bin/environment.py',
+     '        if os.path.islink(cur):\n            return f"{host!r} has a link on its path ({cur!r}): name the real directory"\n',
+     ''),
+    ('EN-read-list', 'bin/environment.py',
+     '    if "read" in reach and not (isinstance(reach["read"], list)\n'
+     '                                and all(isinstance(p, str) for p in reach["read"])):\n'
+     '        out.append("[reach] read is a list of absolute host directories")\n',
+     ''),
+    ('EN-read-charter', 'bin/environment.py',
+     '            why = read_refusal(p, read_roots(prog))\n            if why:\n                out.append(f"[reach] read {why}")\n',
+     '            pass\n'),
+    ('RC-read-cover', 'bin/reach.py',
+     '        if not any(p == r or p.startswith(r + "/") for r in listed):\n',
+     '        if False:\n'),
+    ('RC-read-prefix', 'bin/reach.py',
+     '        if not any(p == r or p.startswith(r + "/") for r in listed):\n',
+     '        if not any(p == r or p.startswith(r) for r in listed):\n'),
+    ('RC-read-of', 'bin/reach.py',
+     '            "read": [p for p in reach.get("read", []) if isinstance(p, str)],\n',
+     '            "read": [],\n'),
+    ('TM-read-law', 'bin/team.py',
+     '                why = env_mod.read_refusal(v, env_mod.read_roots(prog))\n'
+     '                if why is None and not os.path.isdir(v):\n'
+     '                    why = f"{v!r} isn\'t a directory on this host"\n',
+     '                why = None\n'),
+    ('TM-read-charter', 'bin/team.py',
+     '                reach_mod.check_read(prog, reads)\n',
+     '                pass\n'),
+    ('TM-read-twice', 'bin/team.py',
+     '            if len(set(reads)) != len(reads):\n',
+     '            if False:\n'),
+    ('SP-read-meta', 'bin/spawn.py',
+     '        read = list(seat_doc.get("read") or [])\n',
+     '        read = []\n'),
+    ('SP-read-bind', 'bin/spawn.py',
+     '    flat += read_binds(attempt, meta)\n',
+     '    pass\n'),
+    ('SP-read-law', 'bin/spawn.py',
+     '        why = env_mod.read_refusal(p, env_mod.read_roots(prog)) if isinstance(p, str) \\\n'
+     '            else f"{p!r} is not a path"\n'
+     '        if why is None and not os.path.isdir(p):\n'
+     '            why = f"{p!r} isn\'t a directory on this host"\n',
+     '        why = None\n'),
+    ('SP-read-charter', 'bin/spawn.py',
+     '        reach_mod.check_read(prog, paths)\n',
+     '        pass\n'),
+    ('SP-read-waiver', 'bin/spawn.py',
+     '    if arm is None or "rule-of-two" not in (arm[1].get("waivers") or []):\n',
+     '    if False:\n'),
+    ('SP-read-ruling', 'bin/spawn.py',
+     '    arm = ruling_mod.newest(meta["prog"], "arm")\n',
+     '    arm = None\n'),
+
+    # --- the delivery invariant, made whole (M2): after the build the engine asks
+    # git nothing of an attempt. adapter_prepare reads the build's own listing
+    # (tracked.json without the hidden names) instead of asking the attempt's
+    # repository, where a worker's core.fsmonitor ran on the host (measured). The
+    # static half: engine git lives only in GIT_FUNCTIONS, and after the build on
+    # the run's parent only (GIT_PARENT_FUNCTIONS). The walk's re-drive leg
+    # (test/planted-hook-walk.sh, --sabotage) is the measured half, first level ---
+    ('SP-prepare-nogit', 'bin/spawn.py',
+     '        if _repo_tracks(attempt, name):\n',
+     '        if subprocess.run(["git", "-C", os.path.join(attempt, "repo"), "ls-files", "--", name],\n'
+     '                            capture_output=True, text=True, env=engine_env()).stdout.strip():\n'),
+    ('SP-git-nowhere-raw', 'bin/spawn.py',
+     'args[0].elts[0].value == "git"',
+     'args[0].elts[0].value == "GIT"'),
+    ('SP-git-nowhere-helper', 'bin/spawn.py',
+     'head.id in ("egit", "egit_ok", "egit_bytes")',
+     'head.id in ()'),
+    ('SP-git-parent-only', 'bin/spawn.py',
+     '                if not on_parent:\n',
+     '                if False:\n'),
+
+    # --- the rule of two for the older seat key ro (M2): beside a network grant its
+    # door (ro_binds) is the same exfiltration path a read grant is, so it asks for
+    # the same signed waiver (rule_of_two); what ro binds on its own is unchanged.
+    # team.py names the waiver at validate for ro as it does for read ---
+    ('SP-ro-waiver', 'bin/spawn.py',
+     '        rule_of_two(attempt, meta, "an ro path")\n',
+     '        pass\n'),
+    ('SP-ro-waiver-opens', 'bin/spawn.py',
+     '        rule_of_two(attempt, meta, "an ro path")\n',
+     '        rule_of_two(attempt, {**meta, "prog": "/no-ruling-here"}, "an ro path")\n'),
+    ('TM-ro-two', 'bin/team.py',
+     '    return [g for g in ("read", "ro") if seat.get(g)] if seat.get("network") else []\n',
+     '    return [g for g in ("read",) if seat.get(g)] if seat.get("network") else []\n'),
+
+    # --- the writable clone (M2): a shell seat's .git is its own to write, where
+    # the jail is built and only there. Asked for by the ruled seat's shell grant
+    # and earned by the adapter's manifest, both held again at the door; a review
+    # turn's repository is read-only whole. Nothing a worker plants in the clone
+    # reaches the host, by structure: no git of the engine's runs in the attempt
+    # after the build (the rows above), and the seal stages the work tree into a
+    # git directory of its own (SP-seal-own-gitdir), which never delivers .git ---
+    ('SP-clone-ask', 'bin/spawn.py',
+     '        if not seat.get("shell"):\n            return False\n',
+     '        if False:\n            return False\n'),
+    ('SP-clone-earned', 'bin/spawn.py',
+     '        return "shell" in (adapter_manifest(seat.get("adapter") or "stub")\n'
+     '                           .get("tested_classes") or [])\n',
+     '        return True\n'),
+    ('SP-clone-ruled', 'bin/spawn.py',
+     '        seat = seats.get(meta.get("seat")) or {}\n',
+     '        seat = seats.get(meta.get("seat")) or {}\n'
+     '        if meta.get("shell"):\n'
+     '            seat = {**seat, "shell": meta["shell"]}\n'),
+    ('SP-clone-review', 'bin/spawn.py',
+     '    if not (repo_rw and clone_for(attempt, meta)):\n',
+     '    if not clone_for(attempt, meta):\n'),
+    ('SP-clone-bind', 'bin/spawn.py',
+     '    return [("--bind", os.path.join(attempt, "repo"), "/w/repo")]\n',
+     '    return [("--ro-bind", os.path.join(attempt, "repo"), "/w/repo")]\n'),
+    ('SP-seal-own-gitdir', 'bin/spawn.py',
+     'export GIT_DIR=/seal/.swork/.git GIT_WORK_TREE=/w/repo\n',
+     'export GIT_WORK_TREE=/w/repo\n', SPF),
 ]

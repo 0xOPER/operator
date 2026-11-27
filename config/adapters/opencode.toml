@@ -5,7 +5,7 @@ schema = 2
 name = "opencode"
 version_tested = "1.19.5"
 default_model = "claude-sonnet-4-6"
-tested_classes = ["write", "network", "shell"]
+tested_classes = ["write", "network", "shell", "read"]
 # C1(e): hook factories never fire in `run --pure` at the 1.19.5 pin
 # (probed 2026-11-19, three entry shapes) -- unfenced, stated; the v2
 # revisit is the plugin line

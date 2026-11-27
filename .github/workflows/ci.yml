@@ -195,8 +195,8 @@ jobs:
         run: |
           test/conformance.sh --selftest
           test/conformance.sh --matrix
-          test/conformance.sh claude-code write-outside another-seat push-bare net-denied net-allowed shell-allowed
-          test/conformance.sh codex write-outside another-seat push-bare net-denied net-allowed shell-allowed
-          test/conformance.sh opencode write-outside another-seat push-bare net-denied net-allowed shell-allowed
+          test/conformance.sh claude-code write-outside another-seat push-bare net-denied net-allowed shell-allowed read-allowed clone-allowed
+          test/conformance.sh codex write-outside another-seat push-bare net-denied net-allowed shell-allowed read-allowed clone-allowed
+          test/conformance.sh opencode write-outside another-seat push-bare net-denied net-allowed shell-allowed read-allowed clone-allowed
           test/fence-placement.sh claude-code
           test/fence-placement.sh claude-code control

@@ -23,7 +23,10 @@ see = [".github/**"]                # visibility: present in the sparse checkout
 gpu = true                          # the nvidia devices ride this seat's jails
 ro = ["/data/models"]               # read-only host paths (the model tree): mounted
                                     # at their own paths; never on a jail-owned
-                                    # mount, never the engine's own tree or state
+                                    # mount, never the engine's own tree or state.
+                                    # Beside `network`: the rule-of-two waiver
+read = ["/data/datasets/x"]         # host directories the charter lists (the read
+                                    # class): read-only, at their own paths
 env = ["tests"]                     # environments this seat may call in its jail (charter.toml)
 
 [seat.writer.budget]
@@ -59,10 +62,11 @@ working examples (copy them via `bin/operator.sh init` rather than editing
 `ruling sign` to refuse).
 
 > **Enforceability & inert keys:** `claude-code`, `codex` and `opencode` declare
-> `tested_classes = ["write", "network", "shell"]`, each with green
-> `net-allowed` and `shell-allowed` conformance cells; the others declare
+> `tested_classes = ["write", "network", "shell", "read"]`, each with
+> `net-allowed`, `shell-allowed`, `read-allowed` and `clone-allowed` conformance
+> cells (CI runs them at the pins); the others declare
 > `write` only. A grant outside its adapter's tested range is **refused** by
-> `bin/team.py`. `read` and seat `mcp` grants are **refused** for every adapter. `memory`, `skills`, and
+> `bin/team.py`. Seat `mcp` grants are **refused** for every adapter. `memory`, `skills`, and
 > `mcp` declarations are currently **inert** (accepted with a note, not yet
 > wired to enforcement).
 
@@ -78,6 +82,47 @@ each connection is one log row under the attempt's `egress/`, and a host
 outside the policy is refused. The broker is never proxied. Port 443 is
 served; another port is a `[reach].pins` entry. `bin/reach.py policy <dir>
 --seat <seat>` prints the policy a seat's jail runs.
+
+### The seat's reads (`read`)
+
+`read` reaches host directories, bound read-only at their own path in the
+seat's jail (`docs/charter.md`, the read class). Signed, then granted: the
+charter lists the directories a program may read, and a seat's grant names one
+of them or a directory inside it.
+
+```toml
+# charter.toml
+[reach]
+read = ["/data/datasets"]           # the owner's signature: these, and what is inside them
+```
+
+```toml
+# team.toml
+read = ["/data/datasets/x"]         # the seat's share of it
+```
+
+A grant outside the charter refuses at `team validate` by name, and again
+where the jail is built. Every path meets the environment's mount law and a
+stricter one: absolute and clean; no link anywhere on the path; never `/`, a
+system path, a container socket, the engine's own tree, its state or the
+program, nor anything at or above them; never a credential or SSH directory
+(`.ssh`, `.aws`, `.gnupg`, ...); never a home directory or anything above one,
+and never inside another user's. The directory must exist on the host where
+the seat runs. Each bind is read-only, at the path's own place, and the path
+rides the attempt's metadata.
+
+`read` beside `network` needs the signed `rule-of-two` waiver (below): a
+worker that can read a host directory and talk to the network can exfiltrate
+it. The newest arm ruling must carry it, or the seat's jail is not built.
+
+The older seat key `ro` also binds host paths read-only at their own paths, on
+the team's signature alone: no charter lists them. Its fence is the author's
+(`team.toml`); `read`'s is the owner's (`charter.toml`). It is not `read`. But
+beside `network` it is the stated exfiltration path, exactly as `read` is: a
+worker that reads a host path and talks to the network can exfiltrate it. So
+the door where every jail is built now asks the same signed `rule-of-two`
+waiver for `ro` beside `network`, with the same named fix; until now none was
+asked. What `ro` binds on its own does not change.
 
 The `stub` adapter is the fixture worker: its steps come from
 `plans/<task>.json` in the program dir (engine-side authoring -- the plan is
@@ -133,8 +178,11 @@ and closes with it: a run in flight is killed.
   cap gates the next reservation; an in-flight attempt may overshoot up to its
   reservation/turn cap, and USD is estimated from `broker.py`'s model price
   table).
-- `rule-of-two` -- waives overlapping write/external-input combinations when
-  flagged by `team validate`.
+- `rule-of-two` -- a seat that holds `read`, or the older key `ro`, beside
+  `network`: a worker that can read a host directory and talk to the network
+  can exfiltrate it. `team validate` names it as `needs-waiver
+  rule-of-two`, and the newest arm ruling must carry it, or the seat's jail is
+  not built.
 - `unreviewed-rows` -- waives rows without an independent reviewer.
 - `same-family-review` -- required if a worker and its reviewer share the same
   model family.
@@ -301,6 +349,17 @@ outside the repository, a host path, the network) is refused: by the jail and
 the proxy on `codex` and `opencode`, and on `claude-code` by the CLI's own
 check first, with the jail behind it. No shipped adapter enforces command
 prefixes; the grammar accepts them, for an adapter that can.
+
+**The writable clone.** A seat that holds `shell` gets a real clone in its
+jail: the repository binds read-write, `.git` with it, so the worker branches
+in it and adds worktrees of its own. The class is earned per adapter
+(`tested_classes`, behind the `shell-allowed` and `clone-allowed` cells), and
+both the grant and the class are held again where the jail is built: a seat
+on an adapter that has not earned it keeps the read-only `.git`, as a seat
+without `shell` does, and a reviewer's repository is read-only whole. Nothing
+a worker plants in the clone reaches the host (`docs/charter.md`, section 5:
+the delivery invariant and the walk's clone leg). Delivery is unchanged: the
+main work tree's files under the `write` grants, through the gate.
 
 ### Templates and state
 

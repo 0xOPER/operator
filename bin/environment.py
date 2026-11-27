@@ -24,6 +24,14 @@ A seat with env = ["<name>"] gets the door inside its jail as a socket
 (Door here, bin/lib/op-env.py there): the engine serves it, one request at a
 time, grants and budget checked on this side. The turn's end is the run's end.
 
+The read class (docs/charter.md section 5) is a host directory a seat may
+read, bound read-only at its own path. The charter lists the directories
+([reach].read, checked here); a seat's grant names one of them or a directory
+inside it; and every path meets the environment's mount law plus a stricter
+one (read_refusal): no link anywhere on the path, never at or above the
+engine's own tree, its state or the program, never a credential directory,
+never a home.
+
 usage: environment.py validate <program-dir> [--json]
        environment.py run <program-dir> --env NAME [--work DIR] [--timeout S] [--json] -- <cmd...>
        environment.py --selftest | --first-level
@@ -38,6 +46,7 @@ import hashlib
 import ipaddress
 import json
 import os
+import pwd
 import re
 import shutil
 import socket
@@ -87,6 +96,10 @@ SYSTEM_PREFIXES = ("/proc", "/sys", "/dev", "/run", "/var/run", "/var/lib/docker
 SOCKETS = ("docker.sock", "podman.sock", "containerd.sock", "crio.sock",
            "containers.sock")
 RESERVED = ("/work", "/tmp", "/w", "/prog", "/env", "/engine")  # the door's own container paths
+# the read class: a credential or SSH directory by its path components (the
+# names the release lint refuses)
+CREDENTIAL_DIRS = {(".ssh",), (".aws",), (".kube",), (".docker",), (".gnupg",),
+                   (".claude",), (".codex",), (".config", "gh")}
 LOG_CAP = 1024 * 1024     # the first bytes kept, as the jail's run_capped keeps them
 LOG_MAX = "4m"            # the daemon's log rotation: a printing runaway costs disk, not the host
 POLL = 0.25
@@ -172,10 +185,11 @@ def _hosts(v):
     return isinstance(v, list) and all(isinstance(h, str) and HOST_RE.fullmatch(h) for h in v)
 
 
-def charter_findings(doc):
+def charter_findings(doc, prog=None):
     """Every finding of one charter; an empty list is a valid charter. The sections
     later milestones enforce (purse, reach, evidence, reserved) are shape-checked
-    here and nothing more."""
+    here and nothing more, except [reach].read: the read class's directories meet
+    the path law now (read_refusal), with the program among the roots when named."""
     out = []
     if type(doc.get("schema")) is not int or doc["schema"] != SCHEMA:
         out.append(f"schema must be the integer {SCHEMA}, not {doc.get('schema')!r}")
@@ -186,7 +200,8 @@ def charter_findings(doc):
         out.append(f"name must be [a-z0-9][a-z0-9._-]{{0,63}}, not {doc.get('name')!r}")
     sections = (("standing", ("not_after",)),
                 ("purse", ("usd", "minutes", "context", "concurrency")),
-                ("reach", ("profile", "declared_max", "declared_ttl", "allow", "deny", "pins")),
+                ("reach", ("profile", "declared_max", "declared_ttl", "allow", "deny", "pins",
+                           "read")),
                 ("evidence", ("min_mutation_kill",)),
                 ("reserved", ("extra",)))
     body_of = {}
@@ -222,6 +237,14 @@ def charter_findings(doc):
     if "pins" in reach and not (isinstance(reach["pins"], list)
                                 and all(pin_ok(p) for p in reach["pins"])):
         out.append("[reach] pins is a list of 'host=address:port' (an IPv4 address, a port below 65536)")
+    if "read" in reach and not (isinstance(reach["read"], list)
+                                and all(isinstance(p, str) for p in reach["read"])):
+        out.append("[reach] read is a list of absolute host directories")
+    for p in (reach.get("read") if isinstance(reach.get("read"), list) else []):
+        if isinstance(p, str):
+            why = read_refusal(p, read_roots(prog))
+            if why:
+                out.append(f"[reach] read {why}")
     if "min_mutation_kill" in evidence and not (
             _number(evidence["min_mutation_kill"]) and 0 <= evidence["min_mutation_kill"] <= 1):
         out.append("[evidence] min_mutation_kill is a share between 0 and 1")
@@ -261,6 +284,59 @@ def mount_refusal(host, roots=()):
             return f"{host!r} is the engine's own tree or state"
     if p in RESERVED or p.startswith("/w/"):
         return f"{host!r} is a path the door uses inside the environment"
+    return None
+
+
+def read_roots(prog=None):
+    """The roots a read path may never touch or hold: the engine's own tree, its
+    state (the default state root too, when OPERATOR_HOME names none; every run
+    directory, and so every attempt's writable world, is under it), and the program."""
+    state = os.environ.get("OPERATOR_HOME") or os.path.join(
+        os.environ.get("XDG_STATE_HOME") or os.path.expanduser("~/.local/state"), "operator")
+    return (os.path.realpath(ROOT), os.path.realpath(state)) + (
+        (os.path.realpath(prog),) if prog else ())
+
+
+def read_refusal(host, roots=(), homes=None):
+    """Why a seat may not read this host path, or None when it may. The environment's
+    mount law first (mount_refusal: one clean absolute path, never the host root, a
+    system path or prefix, a container socket, an engine root, a path the door uses),
+    then the stricter law the read class demands (docs/charter.md section 5): never
+    at or above an engine root; never a credential or SSH directory; never a home
+    directory or anything above one, whoever's it is (each tool keeps its credentials
+    in its user's home), and never inside another user's; no link anywhere on the
+    path (a link moves the bind's target off what was checked). `homes` is the user
+    database as (uid, home) pairs -- the selftest brings its own. Existence is the
+    caller's to ask: a charter is law, a grant is a directory on this host."""
+    if not host.startswith("/"):
+        return f"{host!r} is not an absolute host path"
+    why = mount_refusal(host, roots)
+    if why:
+        return why
+    p = os.path.normpath(host)
+    for root in roots:
+        if root.startswith(p + "/"):
+            return f"{host!r} holds the engine's own tree, its state or the program ({root})"
+    parts = p.split("/")[1:]
+    for i, part in enumerate(parts):
+        if (part,) in CREDENTIAL_DIRS or (i and tuple(parts[i - 1:i + 1]) in CREDENTIAL_DIRS):
+            return (f"{host!r} names a credential or SSH directory "
+                    f"({'/'.join([''] + parts[:i + 1])}): a seat never reads one")
+    me = os.getuid()
+    for uid, home in ([(e.pw_uid, e.pw_dir) for e in pwd.getpwall()] if homes is None else homes):
+        if not home.startswith("/") or home == "/":
+            continue
+        if home == p or home.startswith(p + "/"):
+            return (f"{host!r} is a home directory, or holds one ({home}): every credential "
+                    "directory in a home would ride the bind")
+        if uid != me and p.startswith(home + "/"):
+            return f"{host!r} is inside another user's home ({home}): a seat never reads one"
+    for i in range(1, len(parts) + 1):
+        cur = "/".join([""] + parts[:i])
+        if os.path.islink(cur):
+            return f"{host!r} has a link on its path ({cur!r}): name the real directory"
+        if not os.path.lexists(cur):
+            break
     return None
 
 
@@ -355,7 +431,7 @@ def specs(prog):
     doc = charter(prog)
     if doc is None:
         return {}
-    bad = charter_findings(doc)
+    bad = charter_findings(doc, prog)
     if bad:
         raise Finding(f"{CHARTER}: {bad[0]}" + (f" (and {len(bad) - 1} more)" if len(bad) > 1 else ""))
     out = {}
@@ -838,7 +914,7 @@ def cmd_validate(prog, as_json=False):
     if doc is None:
         names, bad = [], []
     else:
-        bad = charter_findings(doc)
+        bad = charter_findings(doc, prog)
         names = [] if bad else sorted(specs(prog))
     if as_json:
         print(json.dumps({"ok": not bad, "charter": doc is not None, "environments": names,
@@ -1079,6 +1155,51 @@ def selftest():
                       charter_text() + f'\n[reach]\npins = ["{badpin}"]\n')
         clean(charter_text() + '\n[reach]\npins = ["a.example=192.0.2.1:8443"]\n',
               "V19 a well-formed reach pin validates")
+        # V20 the read class (M2): [reach].read lists host directories, and each
+        # one meets the stricter path law -- the environment's mount law, then:
+        # never at or above an engine root (the program included), never a
+        # credential directory, never a home, no link anywhere on the path
+        def rd(text, needle, label):
+            write(cpath, charter_text() + "\n[reach]\nread = " + text + "\n")
+            got = charter_findings(charter(prog), prog)
+            check(any(needle in g and g.startswith("[reach] read") for g in got), f"{label}: {got}")
+
+        clean(charter_text() + f'\n[reach]\nread = ["{base}/datasets"]\n',
+              "V20 a data directory validates as a read path")
+        for text, needle, label in [
+            ('"/x"', "is a list of", "V20 read takes a list"),
+            ('["data"]', "not an absolute host path", "V20 a relative read path refuses"),
+            ('["/"]', "is the host's own", "V20 the host root refuses"),
+            ('["/proc/x"]', "is a system path", "V20 a system prefix refuses"),
+            ('["/var/run/docker.sock"]', "container socket", "V20 a container socket refuses"),
+            (f'["{base}/datasets/../datasets"]', "one clean absolute path", "V20 `..` refuses"),
+            (f'["{ROOT}/bin"]', "engine's own tree", "V20 the engine's own tree refuses"),
+            (f'["{prog}/roles"]', "engine's own tree", "V20 the program refuses"),
+            (f'["{base}"]', "holds the engine's own tree", "V20 a directory above the state or the program refuses"),
+            (f'["{base}/.ssh"]', "credential or SSH directory", "V20 a credential directory refuses"),
+            (f'["{base}/.config/gh"]', "credential or SSH directory", "V20 a nested credential directory refuses"),
+        ]:
+            rd(text, needle, label)
+        own_home = pwd.getpwuid(os.getuid()).pw_dir
+        if own_home.startswith("/") and mount_refusal(own_home, read_roots(prog)) is None:
+            rd(f'["{own_home}"]', "is a home directory", "V20 a home directory refuses")
+        fake_homes = [(os.getuid(), "/xhomes/me"), (os.getuid() + 1, "/xhomes/other")]
+        r_other = read_refusal("/xhomes/other/ds", (), fake_homes)
+        r_hold = read_refusal("/xhomes", (), fake_homes)
+        check(r_other is not None and "inside another user's home" in r_other,
+              f"V20 another user's home refuses: {r_other}")
+        check(r_hold is not None and "holds one" in r_hold
+              and read_refusal("/xhomes/me", (), fake_homes) is not None,
+              f"V20 a home directory, and anything above one, refuse: {r_hold}")
+        check(read_refusal("/xhomes/me/ds", (), fake_homes) is None,
+              "V20 a data path under the engine's own home passes the law")
+        os.symlink(base, os.path.join(base, "rdlink"))
+        r_link = read_refusal(os.path.join(base, "rdlink", "datasets"), read_roots(prog))
+        check(r_link is not None and "has a link on its path" in r_link,
+              f"V20 a link anywhere on the path refuses: {r_link}")
+        check(read_refusal(os.path.join(base, "datasets"), read_roots(prog)) is None
+              and read_refusal("datasets", read_roots(prog)) is not None,
+              "V20 a plain data directory passes the law; a relative path never does")
 
         # C a contract row's laws
         import contract as contract_mod

@@ -33,6 +33,7 @@ import tomllib
 
 sys.dont_write_bytecode = True
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "bin"))
 
 SCHEMA = 1
 TOP_KEYS = {"schema", "name", "contract", "autonomy", "max_parallel", "budget", "seat", "mcp"}
@@ -239,6 +240,27 @@ def load(prog):
                         raise Finding(f"seat {sname}: ro {v!r} touches the engine's own "
                                       f"tree or state (or names an ancestor of it); "
                                       f"bind a data path instead")
+        if "read" in seat:
+            # host directories the seat may read, bound read-only at their own
+            # paths (docs/charter.md, the read class). The ro fence above is the
+            # author's grant; this one is signed twice: the charter lists the
+            # directories ([reach].read), the seat names one of them or one
+            # inside it, and every path meets the stricter path law
+            import environment as env_mod
+            import reach as reach_mod
+            reads = seat["read"]
+            if len(set(reads)) != len(reads):
+                raise Finding(f"seat {sname}: read names the same path twice; bind it once")
+            for v in reads:
+                why = env_mod.read_refusal(v, env_mod.read_roots(prog))
+                if why is None and not os.path.isdir(v):
+                    why = f"{v!r} isn't a directory on this host"
+                if why:
+                    raise Finding(f"seat {sname}: read path {why}")
+            try:
+                reach_mod.check_read(prog, reads)
+            except (reach_mod.Finding, env_mod.Finding) as e:
+                raise Finding(f"seat {sname}: {e}")
         if "memory" in seat:
             if not isinstance(seat["memory"], dict):
                 raise Finding(f"seat {sname}: memory must be a table of r/w scopes")
@@ -326,7 +348,7 @@ def check_budget(b, where):
 
 
 def check_grant(sname, kind, value):
-    shapes = {"write": "a repo path glob", "read": "a directory path", "network": "a host",
+    shapes = {"write": "a repo path glob", "read": "an absolute host directory path", "network": "a host",
               "shell": "a command prefix", "model": "a model id", "mcp": "a server or tool name"}
     if kind == "model":
         if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}", value):
@@ -339,7 +361,7 @@ def check_grant(sname, kind, value):
             if v != "*" and (not HOST_RE.fullmatch(v)
                              or (":" in v and not 0 < int(v.rsplit(":", 1)[1]) < 65536)):
                 raise Finding(f"seat {sname}: network {v!r} isn't a host or host:port (1-65535)")
-        elif kind in ("write", "read"):
+        elif kind == "write":
             if not GLOB_RE.fullmatch(v) or v.startswith("/") or v.endswith("/") \
                     or ".." in v.split("/"):
                 raise Finding(f"seat {sname}: {kind} {v!r} must be a repo-relative path glob")
@@ -403,6 +425,15 @@ def manifest_classes(prog, adapter):
     if not isinstance(tc, list) or not all(isinstance(c, str) for c in tc) or not tc:
         return []
     return [c for c in tc if c in GRANT_KEYS]
+
+
+def rule_of_two_grants(seat):
+    """The grants of this seat that owe the rule-of-two waiver beside a network
+    grant: a read grant, and the older seat key ro. Either lets a worker read a
+    host path, and a worker that can read a host path and talk to the network can
+    exfiltrate it; where the jail is built the waiver is asked for each
+    (bin/spawn.py, rule_of_two). Empty for a seat that holds no network grant."""
+    return [g for g in ("read", "ro") if seat.get(g)] if seat.get("network") else []
 
 
 def cmd_validate(prog, waivers):
@@ -501,9 +532,11 @@ def cmd_validate(prog, waivers):
         if "usd" in b and "budget=advisory" not in waivables:
             waivables.append("budget=advisory")
             notes.append(f"needs-waiver budget=advisory: seat {sname} has a usd cap nothing enforces before R4's broker")
-        if seat.get("read") and seat.get("network"):
+        owes_two = rule_of_two_grants(seat)
+        if owes_two:
             waivables.append("rule-of-two")
-            notes.append(f"needs-waiver rule-of-two: seat {sname} holds read grants and network effects together")
+            notes.append(f"needs-waiver rule-of-two: seat {sname} holds "
+                         f"{' and '.join(owes_two)} grants and network effects together")
         if seat.get("write"):
             reviewed = [r for r in rows if r.get("seat") == sname and r.get("reviewer")]
             unreviewed = [r for r in rows if r.get("seat") == sname and not r.get("reviewer")]
@@ -656,17 +689,14 @@ human = true
     # E enforceability: no manifest, no grants; a manifest opens only its
     # tested classes. C8 ships real manifests, so the no-manifest arms use an
     # adapter nothing ships, and the claude-code arms measure against the
-    # CORE's own manifest: `read` is the class no shipped adapter claims
-    # (`network` and `shell` are claimed where their conformance cells are green).
+    # CORE's own manifest: `mcp` is the class no shipped adapter claims
+    # (`network`, `shell` and `read` are claimed where their conformance cells are).
     grants = BASE.replace('adapter = "claude-code"\n[seat.rev]',
-                          'adapter = "claude-code"\nread = ["docs"]\n[seat.rev]', 1)
+                          'adapter = "claude-code"\nmcp = ["srv"]\n[seat.rev]', 1)
     d = prog(grants, roles=("worker.md", "reviewer.md"))
     r = run_(d)
     check(r.returncode == 1 and "tested range" in r.stderr,
           f"E the core manifest gates: {r.stderr}")
-    d = prog(grants, roles=("worker.md", "reviewer.md"))
-    r = run_(d, env=with_manifests("read"))
-    check(r.returncode == 0, f"E manifest opens read: {r.stdout}{r.stderr}")
     none = grants.replace('adapter = "claude-code"', 'adapter = "nothing-ships-this"', 1)
     d = prog(none, roles=("worker.md", "reviewer.md"))
     r = run_(d)
@@ -715,13 +745,112 @@ human = true
     r = run_(d, env=with_manifests("write"))
     check(r.returncode == 1 and "context must be a non-negative number" in r.stderr,
           f"F1d a non-number context refuses: {r.stderr[:80]}")
-    ro2 = BASE.replace('adapter = "claude-code"\n[seat.rev]', 'adapter = "claude-code"\nread = ["docs"]\nnetwork = ["pypi.org"]\n[seat.rev]', 1)
-    d = prog(ro2, roles=("worker.md", "reviewer.md"))
-    os.makedirs(os.path.join(d, "docs"), exist_ok=True)
-    with open(os.path.join(d, "charter.toml"), "w") as f:
-        f.write('schema = 1\nname = "st"\n[reach]\nprofile = "dev"\n')   # the charter covers the grant
-    r = run_(d, env=with_manifests(*ALL))
-    check(r.returncode == 0 and "needs-waiver rule-of-two" in r.stdout, f"F rule of two: {r.stdout}")
+    # R the read class (M2): host directories the charter lists in [reach].read,
+    # bound read-only at their own path. A grant is one of them or inside one,
+    # under the stricter path law; an adapter must have earned the class; and
+    # beside a network grant the seat owes the rule-of-two waiver. The arms
+    # validate in this process: the read law is load()'s, and no process is paid
+    import contextlib
+    import io
+    import shutil
+    ds = tempfile.mkdtemp(prefix="tm-ds.")               # a dataset on this host
+    ds_x = os.path.join(ds, "x")
+    os.makedirs(ds_x)
+    os.makedirs(os.path.join(ds, "x2"))
+    os.makedirs(os.path.join(ds, ".ssh"))
+    os.symlink(ds, os.path.join(ds, "link"))
+
+    def read_team(grant, extra="", adapter="claude-code"):
+        return BASE.replace('adapter = "claude-code"\n[seat.rev]',
+                            f'adapter = "{adapter}"\nread = {grant}\n{extra}\n[seat.rev]', 1)
+
+    def chartered(d, reach):
+        """A charter whose [reach] is `reach` (None: no charter at all)."""
+        c = os.path.join(d, "charter.toml")
+        if reach is None:
+            os.path.exists(c) and os.unlink(c)
+        else:
+            with open(c, "w") as f:
+                f.write(f'schema = 1\nname = "st"\n[reach]\n{reach}')
+        return d
+
+    def inproc(d, env=None):
+        """cmd_validate in this process: (rc, stdout, stderr)."""
+        out, err = io.StringIO(), io.StringIO()
+        keep = {k: os.environ.get(k) for k in (env or {})}
+        os.environ.update(env or {})
+        rc = 0
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                cmd_validate(d, [])
+        except SystemExit as e:
+            rc = e.code or 0
+        except (Finding, Void) as e:
+            rc = 1
+            err.write(f"team: {e}\n")
+        finally:
+            for k, v in keep.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        return rc, out.getvalue(), err.getvalue()
+
+    earned = with_manifests("read")
+    d = chartered(prog(read_team(f'["{ds_x}"]'), roles=("worker.md", "reviewer.md")),
+                  f'read = ["{ds_x}"]\n')
+    rc, out, err = inproc(d, env=earned)
+    check(rc == 0 and "seats=3" in out and "rule-of-two" not in out,
+          f"R a listed directory validates on an adapter that earned the class: rc={rc} {out}{err}")
+    d = chartered(prog(read_team(f'["{ds_x}"]', adapter="stub"), roles=("worker.md", "reviewer.md")),
+                  f'read = ["{ds_x}"]\n')
+    rc, out, err = inproc(d)
+    check(rc == 1 and "read is outside adapter" in err and "tested range" in err,
+          f"R an adapter that never earned the class refuses it by name: rc={rc} {err[:200]}")
+    for reach, grant, why, label in [
+        (f'read = ["{ds_x}"]\n', f'["{ds}"]', "outside the charter's read directories",
+         "R the parent of a listed directory refuses"),
+        (f'read = ["{ds_x}"]\n', f'["{ds}/x2"]', "outside the charter's read directories",
+         "R a sibling sharing the prefix refuses"),
+        ("", f'["{ds_x}"]', "outside the charter's read directories",
+         "R a charter listing nothing refuses any read"),
+        (None, f'["{ds_x}"]', "outside the charter's read directories",
+         "R a program without a charter is closed to reads"),
+        (f'read = ["{ds}"]\n', f'["{ds}/link"]', "has a link on its path",
+         "R a link on the path refuses"),
+        (f'read = ["{ds}"]\n', f'["{ds}/.ssh"]', "credential or SSH directory",
+         "R a credential directory refuses"),
+        (f'read = ["{ds}"]\n', '["ds/x"]', "not an absolute host path", "R a relative read path refuses"),
+        (f'read = ["{ds}"]\n', f'["{ds}/x/../x"]', "one clean absolute path", "R `..` refuses"),
+        (f'read = ["{ds}"]\n', f'["{ds_x}", "{ds_x}"]', "names the same path twice", "R a duplicate refuses"),
+        (f'read = ["{ds}", "/no/such/dir"]\n', f'["{ds}/absent"]', "isn't a directory on this host",
+         "R a directory that isn't there refuses"),
+        (f'read = ["{ds}", "{ROOT}"]\n', f'["{ROOT}/bin"]', "engine's own tree",
+         "R the engine's own tree refuses"),
+    ]:
+        d = chartered(prog(read_team(grant), roles=("worker.md", "reviewer.md")), reach)
+        rc, out, err = inproc(d, env=earned)
+        check(rc == 1 and why in err, f"{label}: rc={rc} {err[:200]}")
+    d = chartered(prog(read_team(f'["{ds_x}"]', 'network = ["pypi.org"]'),
+                       roles=("worker.md", "reviewer.md")),
+                  f'profile = "dev"\nread = ["{ds_x}"]\n')
+    rc, out, err = inproc(d, env=with_manifests(*ALL))
+    check(rc == 0 and "needs-waiver rule-of-two" in out, f"R rule of two: {out}{err}")
+    # R-ro the older seat key ro beside a network grant owes the same waiver:
+    # the same worker could exfiltrate what it reads. The law is a function of
+    # the seat alone, so the room can hold it (the ro path law itself needs a
+    # host path the room cannot make; the validate-level leg is the host's,
+    # at F1c)
+    for seat, owes, label in [
+        ({"ro": ["/d"], "network": ["pypi.org"]}, ["ro"], "R-ro ro beside network owes the waiver"),
+        ({"read": ["/d"], "network": ["pypi.org"]}, ["read"], "R-ro read beside network still owes it"),
+        ({"ro": ["/d"], "read": ["/d"], "network": ["pypi.org"]}, ["read", "ro"],
+         "R-ro both beside network owe it, both named"),
+        ({"ro": ["/d"]}, [], "R-ro ro alone owes no waiver"),
+        ({"network": ["pypi.org"]}, [], "R-ro network alone owes no waiver"),
+    ]:
+        check(rule_of_two_grants(seat) == owes, f"{label}: {rule_of_two_grants(seat)}")
+    shutil.rmtree(ds, ignore_errors=True)
     # F-net the charter bounds a seat's reach: a host outside it refuses by name
     for hosts, why in ((['outside.test'], "outside the charter's reach"), (["*"], "closed")):
         netx = BASE.replace('adapter = "claude-code"\n[seat.rev]',
@@ -779,6 +908,17 @@ human = true
         d = prog(ok_gpu, roles=("worker.md", "reviewer.md"))
         r = run_(d, env=with_manifests("write"))
         check(r.returncode == 0, f"F1c gpu+ro validate: rc={r.returncode} {r.stderr[:100]}")
+        # R-ro, validate level: ro beside network names the waiver, as read
+        # beside network does (the fix is the same signed waiver)
+        ro_two = BASE.replace('adapter = "claude-code"\n[seat.rev]',
+                              f'adapter = "claude-code"\nro = ["{_ro_legal}"]\nnetwork = ["pypi.org"]\n'
+                              '[seat.rev]', 1)
+        d = prog(ro_two, roles=("worker.md", "reviewer.md"))
+        with open(os.path.join(d, "charter.toml"), "w") as f:
+            f.write('schema = 1\nname = "st"\n\n[reach]\nprofile = "dev"\n')
+        r = run_(d, env=with_manifests(*ALL))
+        check(r.returncode == 0 and "needs-waiver rule-of-two: seat worker holds ro grants" in r.stdout,
+              f"R-ro validate names the waiver for ro beside network: rc={r.returncode} {r.stdout}{r.stderr[:160]}")
         import shutil as _sh1d
         _sh1d.rmtree(_ro_legal, ignore_errors=True)
     # the engine-tree refusal fires where the tree lives off the jail's own
