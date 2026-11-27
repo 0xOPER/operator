@@ -4,8 +4,10 @@ collect, gate, candidate, promote.
 
 Every step fails closed, and the worker's bytes reach the engine only through a jail or
 a pipe: the engine's git runs on parent objects with a scrubbed environment and never
-inside an attempt after the worker starts; the seal, the collector and the worker run
-in jails built by bin/lib/jail.py; the supervisor alone drains the worker's pipes into
+inside an attempt after the worker starts (inside an attempt only while the engine builds
+it, before any worker exists: GIT_FUNCTIONS says where engine git lives, and the re-drive
+leg of test/planted-hook-walk.sh stands over it); the seal, the collector and the worker
+run in jails built by bin/lib/jail.py; the supervisor alone drains the worker's pipes into
 files outside the sandbox, so no descriptor the worker holds can truncate its own
 record. Delivery is what the commit says, not what the attempt claimed: the gate
 re-derives every rule on the fetched bundle, and candidate re-derives them on the
@@ -690,6 +692,11 @@ def build_attempt(rd, seat, grants, ref, aid, task, prog, seats):
         json.dump(meta, f, indent=1, sort_keys=True)
     with open(os.path.join(adir, "hidden.json"), "w") as f:
         json.dump(hidden, f, indent=1, sort_keys=True)
+    # what the start commit tracks, as the stage repository listed it: the engine's
+    # own answer to "does the repo track <path>?" (adapter_prepare), taken before any
+    # worker exists. The attempt's index is this list without the hidden names
+    with open(os.path.join(adir, "tracked.json"), "w") as f:
+        json.dump(tracked, f, indent=1, sort_keys=True)
     return adir
 
 
@@ -1726,6 +1733,28 @@ def seat_model_of(attempt, manifest):
     return model
 
 
+def _repo_tracks(attempt, name):
+    """Whether the attempt's repository tracked `name` where it was built. The engine's
+    own answer, from build time: tracked.json is the stage repository's listing of the
+    start commit, taken before any worker existed, without the names the attempt hides
+    (hidden.json) -- what the attempt's own index holds. Never a git call: an attempt
+    driven again may hold a worker's .git, and git honours a repository's config (a
+    planted core.fsmonitor ran on the host through the call this replaces; measured).
+    The attempt's own files are the engine's: one that won't read is Void."""
+    try:
+        with open(os.path.join(attempt, "tracked.json"), encoding="utf-8") as f:
+            tracked = json.load(f)
+        with open(os.path.join(attempt, "hidden.json"), encoding="utf-8") as f:
+            hidden = set(json.load(f))
+    except (OSError, ValueError) as e:
+        raise Void(f"the attempt's own listing of its repository won't read ({e}); "
+                   "rebuild the attempt")
+    if not isinstance(tracked, list) or not all(isinstance(p, str) for p in tracked):
+        raise Void("the attempt's own listing of its repository isn't a list of paths; "
+                   "rebuild the attempt")
+    return any(p == name or p.startswith(name + "/") for p in tracked if p not in hidden)
+
+
 def adapter_prepare(attempt, manifest, broker):
     """Manifest-driven layout before the run: directories that must exist
     (CODEX_HOME; a dangling path is a hard error), the repo-level config some
@@ -1794,10 +1823,10 @@ def adapter_prepare(attempt, manifest, broker):
     if body:
         name = manifest.get("repo_config", "opencode.json")
         # F8: a repo that tracks its own copy would be dirtied by the engine's
-        # render (the broker URL) before the run -- refuse and name it
-        tracked = subprocess.run(["git", "-C", repo, "ls-files", "--", name],
-                                 capture_output=True, text=True, env=engine_env())
-        if tracked.returncode == 0 and tracked.stdout.strip():
+        # render (the broker URL) before the run -- refuse and name it. Asked of
+        # the build's own listing, never of the attempt's repository: git does
+        # not run here (_repo_tracks)
+        if _repo_tracks(attempt, name):
             raise Refused(f"the repo tracks {name}; the engine plants its own "
                           f"(the broker address must be ours, not the program's) "
                           "-- remove the tracked file or rename it out of the "
@@ -2985,6 +3014,66 @@ def contextlib_redirect():
     return contextlib.redirect_stdout(io.StringIO())
 
 
+# where engine git lives, and on what: the delivery invariant's static half.
+# A function of this module outside GIT_FUNCTIONS runs no git at all; one of
+# GIT_PARENT_FUNCTIONS runs it after the build on the run's parent only (a raw
+# call's -C names parent, a helper is called with it). The build's own functions
+# (hidden_names, build_attempt, cmd_init_run) run it on repositories the engine
+# is making, before any worker exists. A function that runs after a worker's
+# turn asks git nothing, because from then on an attempt's .git may be a
+# worker's and git honours a repository's config. The selftest holds this
+# (git_calls_outside); test/planted-hook-walk.sh's re-drive leg measures it.
+GIT_FUNCTIONS = ("egit", "egit_ok", "egit_bytes", "hidden_names", "build_attempt",
+                 "compose_brief", "_tree_read", "_import_gate", "_candidate", "_promote",
+                 "_reject", "cmd_init_run",
+                 # the suites' own fixtures and arms
+                 "selftest", "first_level", "_stage", "_commit", "_world", "_seal_room",
+                 "_forge")
+GIT_PARENT_FUNCTIONS = ("compose_brief", "_tree_read", "_import_gate", "_candidate",
+                        "_promote", "_reject")
+
+
+def git_calls_outside(source, allowed, parent_only=()):
+    """Every call in `source` (this module) that runs git where it may not, as
+    (function, line) pairs: a call in a top-level function outside `allowed`, or
+    -- in a function of `parent_only` -- one that doesn't run on the run's parent
+    (a raw call's -C names parent, a helper is called with it). Git is one of the
+    three engine git helpers, or a subprocess whose literal argv begins with git.
+    An argv assembled elsewhere is not seen; the launcher's own is bwrap's, from
+    jail.py."""
+    import ast
+    out = []
+    for fn in ast.parse(source).body:
+        if not isinstance(fn, ast.FunctionDef):
+            continue
+        for call in ast.walk(fn):
+            if not isinstance(call, ast.Call):
+                continue
+            head, args = call.func, call.args
+            helper = isinstance(head, ast.Name) and head.id in ("egit", "egit_ok", "egit_bytes")
+            raw = (isinstance(head, ast.Attribute) and isinstance(head.value, ast.Name)
+                   and head.value.id == "subprocess" and bool(args)
+                   and isinstance(args[0], (ast.List, ast.Tuple)) and args[0].elts
+                   and isinstance(args[0].elts[0], ast.Constant)
+                   and args[0].elts[0].value == "git")
+            if not (helper or raw):
+                continue
+            if fn.name not in allowed:
+                out.append((fn.name, call.lineno))
+            elif fn.name in parent_only:
+                if helper:
+                    on_parent = isinstance(args[0], ast.Name) and args[0].id == "parent"
+                else:
+                    els = args[0].elts
+                    at = next((i for i, e in enumerate(els[:-1])
+                               if isinstance(e, ast.Constant) and e.value == "-C"), None)
+                    on_parent = at is not None and isinstance(els[at + 1], ast.Name) \
+                        and els[at + 1].id == "parent"
+                if not on_parent:
+                    out.append((fn.name, call.lineno))
+    return out
+
+
 def selftest():
     """Room-safe: the loaders, the layout, the gate, candidate/promote/reject, the
     first steps, compose and the stream reader, on fixtures and engine git only. No
@@ -3981,23 +4070,105 @@ def selftest():
                 with open(os.path.join(prog, "team.toml"), "w") as f:
                     f.write(tk7)
                 shutil.rmtree(sk3, ignore_errors=True)
-            # F8: a repo that tracks the CLI's config file refuses the plant.
-            # (opencode.json itself sits in the engine's droppings exclude, so
-            # a repo can't track it -- the arm uses a config name that isn't
-            # excluded, which is the same refusal.)
+            # F8: a repo that tracks the CLI's config file refuses the plant --
+            # asked of the build's own listing, so a base commit that tracks the
+            # config is what refuses. (opencode.json is an instruction name: an
+            # attempt hides it unless a grant names it, so the arm's first config
+            # is a name nothing hides; the hidden twin is the other half of the
+            # old answer: a repo that ships its own opencode.json still turns on
+            # opencode.)
+            rd_tr, _, _ = _world(home, "w2tracks", {"src/a.py": "v=1\n", "settings.json": "{}\n",
+                                                    "opencode.json": '{"model": "theirs"}\n'})
+            aw_tr = build_attempt(rd_tr, "w", ["src/**"], "integration/R", "c8-tracked", "impl",
+                                  prog, ["w", "r"])
             m_tr = dict(m_oc, repo_config="settings.json",
                         repo_config_body='{"broker": "{BROKER_V1}"}')
-            with open(os.path.join(aw8, "repo", "settings.json"), "w") as f:
-                f.write("{}\n")
-            egit_ok(os.path.join(aw8, "repo"), "add", "settings.json")
             try:
-                adapter_prepare(aw8, m_tr, BROKER)
+                adapter_prepare(aw_tr, m_tr, BROKER)
                 check(False, "H3 a tracked config refuses the plant")
             except Refused as e:
                 check("tracks settings.json" in str(e), f"H3 names the conflict: {e}")
-            subprocess.run(["git", "-C", os.path.join(aw8, "repo"), "rm", "-q",
-                            "--cached", "settings.json"],
-                           capture_output=True, env=engine_env())
+            with open(os.path.join(aw_tr, "repo", "settings.json"), encoding="utf-8") as f:
+                kept_tr = f.read()
+            check(kept_tr == "{}\n",
+                  "H3 the refusal plants nothing over a tracked file: it is still the repo's")
+            check(not os.path.lexists(os.path.join(aw_tr, "repo", "opencode.json")) and
+                  adapter_prepare(aw_tr, m_oc, BROKER) == ["opencode.json"] and
+                  os.path.isfile(os.path.join(aw_tr, "repo", "opencode.json")),
+                  "H3 a tracked config the attempt hides is not the attempt's: the plant lands")
+            aw_tr2 = build_attempt(rd_tr, "w", ["src/**", "opencode.json"], "integration/R",
+                                   "c8-tracked2", "impl", prog, ["w", "r"])
+            try:
+                adapter_prepare(aw_tr2, m_oc, BROKER)
+                check(False, "H3 a tracked config the grant keeps visible refuses the plant")
+            except Refused as e:
+                check("tracks opencode.json" in str(e), f"H3 the visible twin refuses: {e}")
+            for a_ in (aw_tr, aw_tr2):
+                shutil.rmtree(a_, ignore_errors=True)
+            # the delivery invariant, measured in the room: after the build the
+            # engine asks an attempt's repository nothing. A plant that fires
+            # wherever git runs in that repository (the control) leaves no trace
+            # when adapter_prepare asks whether the config is tracked
+            cfg_p = os.path.join(aw8, "repo", ".git", "config")
+            with open(cfg_p, encoding="utf-8") as f:
+                cfg_keep = f.read()
+            fired = os.path.join(base, "fsmonitor.fired")
+            with open(cfg_p, "a", encoding="utf-8") as f:
+                f.write(f"\n[core]\n\tfsmonitor = sh -c 'touch {fired}'\n")
+            subprocess.run(["git", "-C", os.path.join(aw8, "repo"), "ls-files", "--",
+                            "opencode.json"], capture_output=True, env=engine_env())
+            check(os.path.isfile(fired),
+                  "H3 the control: git run in that repository on this host fires the plant")
+            if os.path.exists(fired):
+                os.unlink(fired)
+            with contextlib_redirect():
+                adapter_prepare(aw8, m_oc, BROKER)
+            check(not os.path.exists(fired),
+                  "H3 adapter_prepare runs no git in the attempt: the plant left no trace")
+            with open(cfg_p, "w", encoding="utf-8") as f:
+                f.write(cfg_keep)
+            aw_nv = build_attempt(rd_tr, "w", ["src/**"], "integration/R", "c8-nolisting",
+                                  "impl", prog, ["w", "r"])
+            os.unlink(os.path.join(aw_nv, "tracked.json"))
+            try:
+                with contextlib_redirect():
+                    adapter_prepare(aw_nv, m_oc, BROKER)
+                check(False, "H3 an attempt without its own listing is Void, never planted over")
+            except Void as e:
+                check("rebuild" in str(e), f"H3 the missing listing names its fix: {e}")
+            shutil.rmtree(aw_nv, ignore_errors=True)
+            shutil.rmtree(rd_tr, ignore_errors=True)
+            # G-git the delivery invariant's static half: engine git lives only
+            # where GIT_FUNCTIONS says, and after the build on the run's parent
+            # only (GIT_PARENT_FUNCTIONS), so no function that runs after a
+            # worker's turn asks git anything of an attempt. Its control: each
+            # forbidden shape is seen
+            with open(os.path.join(ROOT, "bin", "spawn.py"), encoding="utf-8") as f:
+                own_src = f.read()
+            stray = git_calls_outside(own_src, GIT_FUNCTIONS, GIT_PARENT_FUNCTIONS)
+            check(not stray, f"G-git engine git only where the law says: {stray[:4]}")
+            probe_src = ("import subprocess\n"
+                         "def raw(repo):\n"
+                         "    subprocess.run(['git', '-C', repo, 'status'])\n"
+                         "def popped(repo):\n"
+                         "    subprocess.Popen(('git', '-C', repo), capture_output=True)\n"
+                         "def asked(repo):\n"
+                         "    egit_ok(repo, 'status')\n"
+                         "def listed(repo):\n"
+                         "    egit_bytes(repo, 'status')\n"
+                         "def other(repo):\n"
+                         "    subprocess.run(['tar', '-c', repo])\n"
+                         "def fine(repo):\n"
+                         "    subprocess.run(['git', '-C', repo])\n"
+                         "def gate(attempt, parent):\n"
+                         "    subprocess.run(['git', '-C', attempt, 'status'])\n"
+                         "    egit(attempt, 'status')\n")
+            seen = [n for n, _ in git_calls_outside(probe_src, {"fine", "gate"}, ("gate",))]
+            check(seen == ["raw", "popped", "asked", "listed", "gate", "gate"],
+                  f"G-git the scan sees each forbidden shape, and only those: {seen}")
+            check(not git_calls_outside(probe_src, {"fine", "gate", "raw", "popped", "asked",
+                                                    "listed", "other"}),
+                  "G-git a function the law allows, on any repository, is no finding")
         finally:
             os.environ.pop("OPERATOR_CREDENTIAL", None)
         # H4 P18's skills law: skills ride the repo, never the home dir

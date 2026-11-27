@@ -256,8 +256,8 @@ NEUTERS = [
     ("SP-admitgate", SP, "demands = [g for g in team_mod.GRANT_KEYS if g != \"model\" and s.get(g)]",
      "demands = []"),
     ("SP-repoconflict", SP,
-     "if tracked.returncode == 0 and tracked.stdout.strip():",
-     "if False and tracked.returncode == 0 and tracked.stdout.strip():"),
+     '        if _repo_tracks(attempt, name):\n',
+     '        if False:\n'),
     ("SP-preflight-bound", SP, 'if want and re.search(rf"(?<!\\d){re.escape(want)}(?!\\d)", got):',
      "if want and want in got:"),
     ("SP-brokersub", SP, 'env = {k: v.replace("{BROKER}", broker) for k, v in env.items()}',
@@ -2014,4 +2014,25 @@ NEUTERS = [
     ('SP-read-ruling', 'bin/spawn.py',
      '        arm = ruling_mod.newest(prog, "arm")\n',
      '        arm = None\n'),
+
+    # --- the delivery invariant, made whole (M2): after the build the engine asks
+    # git nothing of an attempt. adapter_prepare reads the build's own listing
+    # (tracked.json without the hidden names) instead of asking the attempt's
+    # repository, where a worker's core.fsmonitor ran on the host (measured). The
+    # static half: engine git lives only in GIT_FUNCTIONS, and after the build on
+    # the run's parent only (GIT_PARENT_FUNCTIONS). The walk's re-drive leg
+    # (test/planted-hook-walk.sh, --sabotage) is the measured half, first level ---
+    ('SP-prepare-nogit', 'bin/spawn.py',
+     '        if _repo_tracks(attempt, name):\n',
+     '        if subprocess.run(["git", "-C", os.path.join(attempt, "repo"), "ls-files", "--", name],\n'
+     '                            capture_output=True, text=True, env=engine_env()).stdout.strip():\n'),
+    ('SP-git-nowhere-raw', 'bin/spawn.py',
+     'args[0].elts[0].value == "git"',
+     'args[0].elts[0].value == "GIT"'),
+    ('SP-git-nowhere-helper', 'bin/spawn.py',
+     'head.id in ("egit", "egit_ok", "egit_bytes")',
+     'head.id in ()'),
+    ('SP-git-parent-only', 'bin/spawn.py',
+     '                if not on_parent:\n',
+     '                if False:\n'),
 ]
