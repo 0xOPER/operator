@@ -17,6 +17,9 @@ All notable changes to OPERATOR are documented in this file.
 - Completed `docs/authoring.md` (including `[seat.op]`, waivers, `budget.minutes`/`budget.context`, contract keys, and a valid `contract.toml` example), refreshed `INTERFACES.md`, and updated `CONTRIBUTING.md`, `SECURITY.md`, `AGENTS.md`, and `docs/architecture.md`.
 - Added Ubuntu 24.04 AppArmor `bwrap` profile instructions, macOS `--mount` Docker workflow, Real CLIs configuration guide (`spawn preflight`, `OPERATOR_ZAI_*`, `OPERATOR_TURN_*`, `OPERATOR_PAGER_COMMAND`), and `LICENSE` appendix notice.
 
+### CI
+- `Dockerfile`: the base image is pinned by digest (`ubuntu:24.04@sha256:562111b8...`), so the image CI builds is the one that was reviewed and not whatever the tag serves that day.
+
 ## `v0.1.0` — 2026-11-26
 
 Initial public release of OPERATOR under the Apache License 2.0.
