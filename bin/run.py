@@ -570,7 +570,8 @@ def cmd_start(prog, run_name, autonomy, source=None):
     print(f"started {run_name} autonomy={autonomy} seats={len(seats)}")
 
 
-OPERATOR_VERBS = ("retry", "reply", "resolve", "cancel", "stop")
+OPERATOR_VERBS = ("retry", "reply", "resolve", "cancel", "stop", "net.allow")
+HOST_OK = re.compile(r"[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?")   # a net.allow host: bare, lower case
 UNRESOLVABLE_ESC_KINDS = ("halt", "stop", "security", "ruling", "gate_refused", "retry_cap", "review_red")
 RESOLVABLE_ESC_KINDS = ("episode", "needs_input", "conflict", "contract_red")
 MAX_TASK_RETRIES = 3
@@ -658,12 +659,49 @@ def _fence_op_slice(text, cap):
     return _RESIDUAL_TAG_RE.sub("<ESC-untrusted-ESC>", _rv.fence(clipped))
 
 
-def _operator_brief(run_name, states, escs, verdict_notes):
+def _refused_egress(rd):
+    """The hosts the charter's proxy refused, per seat, newest attempt first:
+    [(seat, host, times)]. The rows are the proxy's own, under each attempt.
+    A worker that could not reach a host shows here, so the operator answers
+    with net.allow or a reply on evidence, not on a guess. A host is printed
+    only in the shape a name has; anything else is not a host."""
+    rows = []
+    root = os.path.join(rd, "attempts")
+    if not os.path.isdir(root):
+        return rows
+    for name in os.listdir(root):
+        adir = os.path.join(root, name)
+        log, meta_p = os.path.join(adir, "egress", "egress.log"), os.path.join(adir, "attempt.json")
+        if name.startswith(".") or os.path.islink(adir) or not os.path.isfile(log) \
+                or not os.path.isfile(meta_p):
+            continue
+        try:
+            with open(meta_p, encoding="utf-8") as f:
+                seat = json.load(f).get("seat")
+            with open(log, encoding="ascii", errors="replace") as f:
+                text = f.read(65536)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(seat, str) or not spawn_mod.ID_RE.fullmatch(seat):
+            continue
+        counts = {}
+        for ln in text.splitlines():
+            parts = ln.split(" ")
+            if len(parts) >= 3 and parts[1] == "refused":
+                host = parts[2].rsplit(":", 1)[0]
+                if re.fullmatch(r"[A-Za-z0-9._-]{1,253}", host):
+                    counts[host] = counts.get(host, 0) + 1
+        if counts:
+            rows.append((os.path.getmtime(adir), seat, counts))
+    rows.sort(reverse=True)
+    return [(seat, host, n) for _, seat, counts in rows for host, n in sorted(counts.items())][:16]
+
+def _operator_brief(run_name, states, escs, verdict_notes, refused=()):
     """The operator seat's brief: the whole run on one screen, the legal
     verbs, and the law -- a whitelisted directive, never prose the engine
     would have to trust. Every dynamic/worker-influenced span (task detail,
-    escalation bodies, reviewer notes) crosses compose-fence with a per-turn
-    random delimiter."""
+    escalation bodies, reviewer notes, refused hosts) crosses compose-fence
+    with a per-turn random delimiter."""
     import review as _rv
     lines = [
         spawn_mod.DATA_CLAUSE,
@@ -679,7 +717,8 @@ def _operator_brief(run_name, states, escs, verdict_notes):
         '              {"verb": "reply", "task": "<task-id>", "note": "<one line to the worker>"},',
         '              {"verb": "resolve", "file": "<escalation filename>"},',
         '              {"verb": "cancel", "attempt": "<attempt-id>"},',
-        '              {"verb": "stop", "reason": "<one line>"}]}',
+        '              {"verb": "stop", "reason": "<one line>"},',
+        '              {"verb": "net.allow", "seat": "<seat>", "host": "<host>"}]}',
         "",
         "THE LAW: only these verbs; only this run; retry answers an escalated "
         "task with a fresh attempt (subject to the engine's per-task retry "
@@ -687,7 +726,11 @@ def _operator_brief(run_name, states, escs, verdict_notes):
         "FOLDED (a bug already repaired, a duplicate) -- never resolve a live "
         "ask or a protected terminal/security/ruling escalation; reply queues "
         "advisory guidance for a task's next attempt; cancel kills a named "
-        "attempt; stop halts the run and terminates live jails. If the "
+        "attempt; stop halts the run and terminates live jails; "
+        "net.allow opens one host on 443 for a seat that already holds a network "
+        "grant, for the charter's declared lifetime and inside its declared "
+        "number, never a denied host, each one logged -- it rides the seat's "
+        "next turn, so retry the task in the same directive. If the "
         "escalation asks for something OUTSIDE every seat's reach (a "
         "container run, an owner signature), resolve nothing and reply to "
         "the task naming exactly what must happen and who must do it. Few "
@@ -726,6 +769,14 @@ def _operator_brief(run_name, states, escs, verdict_notes):
         for i, note in enumerate(verdict_notes[:32]):
             lines.append(f'<span-untrusted source="verdict:{i}">'
                          f"{_fence_op_slice(note, 400)}</span-untrusted>")
+    if refused:
+        lines.append("## egress refused by the charter (seat: host, times; newest attempt first)")
+        lines.append("A refused host is why a worker could not fetch. net.allow opens one "
+                     "for a seat that holds a network grant, inside the charter's declared "
+                     "rule; one the rule does not cover is the owner's, so reply with that.")
+        for i, (seat, host, n) in enumerate(refused[:16]):
+            lines.append(f'<span-untrusted source="egress:{i}">'
+                         f"{_fence_op_slice(seat + ': ' + host + f' x{n}', 300)}</span-untrusted>")
     raw = "\n".join(lines) + "\n"
     if len(raw) > spawn_mod.BRIEF_CAP:
         raise Refused(f"operator brief exceeds {spawn_mod.BRIEF_CAP}-byte cap")
@@ -854,6 +905,25 @@ def _auto_resolve_on_promote(rd, task):
             pass
 
 
+def _operator_net_allow(prog, act):
+    """net.allow, the declared rule's verb (bin/reach.py): one host for a seat
+    that holds a network grant, inside the charter's number and lifetime. The
+    rule refuses here exactly as at its own door."""
+    import reach as reach_mod
+    seat, host = act.get("seat"), act.get("host")
+    if not isinstance(seat, str) or not spawn_mod.ID_RE.fullmatch(seat):
+        return f"REFUSED net.allow: invalid seat id {seat!r}"
+    if not isinstance(host, str) or not HOST_OK.fullmatch(host):
+        return f"REFUSED net.allow: invalid host {host!r}"
+    try:
+        e = reach_mod.allow(prog, seat, host, by="op")
+    except reach_mod.Refused as e:
+        return f"REFUSED net.allow: {e}"
+    except (reach_mod.Void, OSError) as e:
+        return f"REFUSED net.allow: VOID {e}"
+    return f"net.allow {e['host']} for {e['seat']}: ok until {e['until']}"
+
+
 def _execute_operator_action(rd, run_name, act, prog):
     """One whitelisted verb through the engine's own paths -- never a shell,
     never a verb the law doesn't name. Deterministic capability guards bound
@@ -906,6 +976,8 @@ def _execute_operator_action(rd, run_name, act, prog):
             finally:
                 os.unlink(tmp)
             return f"reply {task}: queued"
+        if verb == "net.allow":
+            return _operator_net_allow(prog, act)
         if verb == "resolve":
             raw_file = act.get("file")
             if not isinstance(raw_file, str) or "/" in raw_file or "\\" in raw_file \
@@ -1020,7 +1092,7 @@ def cmd_operate(run_name, timeout_s=None, as_json=False):
         os.makedirs(os.path.join(adir, "compiled"), exist_ok=True)
         with open(os.path.join(adir, "compiled", "brief.md"), "w",
                   encoding="utf-8") as f:
-            f.write(_operator_brief(run_name, states, escs, verdict_notes))
+            f.write(_operator_brief(run_name, states, escs, verdict_notes, _refused_egress(rd)))
         log_event(rd, "dispatch", attempt=aid, task="operate", seat="op")
         state = spawn_mod.cmd_adapter(adir, timeout_s or TURN_TIMEOUT)
     except BaseException:
@@ -3588,6 +3660,71 @@ def selftest():
               and "<uf-" in b_op and "<span-untrusted" not in b_op
               and "task-detail:t" in b_op and "ESC-untrusted-ESC" in b_op,
               "OP the brief carries the states, the escalation, nonce fences, and the law")
+        check('"verb": "net.allow"' in b_op and "net.allow" in b_op.split("DELIVERY FACTS")[0],
+              "OP the brief offers net.allow and states its bounds")
+        # OP1b net.allow is the declared rule's verb: the charter bounds it
+        # here exactly as at the door, and a refusal names the fix
+        import reach as _reach_mod
+        _opd_prog = os.path.join(_opd, "prog")
+        os.makedirs(os.path.join(_opd_prog, "roles"), exist_ok=True)
+        for _name, _body in (
+                ("contract.toml", 'schema = 2\n[[row]]\nid = "r1"\nstage = "s"\ndesc = "d"\nkind = "run"\n'
+                                  'seat = "w"\nreviewer = "r"\ncmd = "true"\n'),
+                ("team.toml", 'schema = 1\nname = "t"\nmax_parallel = 1\n[seat.w]\nrole = "roles/w.md"\n'
+                              'adapter = "stub"\nnetwork = ["api.example.org"]\n'),
+                ("roles/w.md", "You are the worker seat.\n"),
+                ("charter.toml", 'schema = 1\nname = "st"\n[reach]\nprofile = "dev"\ndeclared_max = 1\n'
+                                 'declared_ttl = 600\ndeny = ["bad.example.org"]\n')):
+            with open(os.path.join(_opd_prog, _name), "w") as f:
+                f.write(_body)
+        _old_cl = os.environ.get("CALL_LOG_FILE")
+        os.environ["CALL_LOG_FILE"] = os.path.join(_opd, "call-log.tsv")
+        try:
+            r_na = _execute_operator_action(
+                _opd, "rx", {"verb": "net.allow", "seat": "w", "host": "docs.example.net"}, _opd_prog)
+            check(r_na.startswith("net.allow docs.example.net for w: ok until ")
+                  and _reach_mod.declared_of(_opd_prog)[0]["by"] == "op",
+                  f"OP1b net.allow declares a host for the seat: {r_na}")
+            for act_na, needle_na in (
+                    ({"verb": "net.allow", "seat": "w", "host": "more.example.net"}, "declared_max is 1"),
+                    ({"verb": "net.allow", "seat": "w", "host": "bad.example.org"}, "deny list"),
+                    ({"verb": "net.allow", "seat": "nope", "host": "more.example.net"}, "holds no network grant"),
+                    ({"verb": "net.allow", "seat": "../w", "host": "more.example.net"}, "invalid seat id"),
+                    ({"verb": "net.allow", "seat": "w", "host": "a/b"}, "invalid host"),
+                    ({"verb": "net.allow", "seat": "w", "host": "Docs.Example.net"}, "invalid host")):
+                r_na = _execute_operator_action(_opd, "rx", act_na, _opd_prog)
+                check(r_na.startswith("REFUSED net.allow") and needle_na in r_na,
+                      f"OP1b {act_na['host']} for {act_na['seat']}: {r_na}")
+        finally:
+            if _old_cl is None:
+                os.environ.pop("CALL_LOG_FILE", None)
+            else:
+                os.environ["CALL_LOG_FILE"] = _old_cl
+        # OP1c the brief names the hosts the charter's proxy refused, per
+        # seat, fenced: the operator answers net.allow on evidence
+        _eg = os.path.join(_opd, "attempts", "a1")
+        os.makedirs(os.path.join(_eg, "egress"), exist_ok=True)
+        with open(os.path.join(_eg, "attempt.json"), "w") as f:
+            f.write('{"seat": "w"}')
+        with open(os.path.join(_eg, "egress", "egress.log"), "w") as f:
+            f.write("2026-11-27T03:00:00Z refused docs.example.net:443 sent=0 recv=0 secs=0.0 not on the list\n"
+                    "2026-11-27T03:00:01Z refused docs.example.net:443 sent=0 recv=0 secs=0.0 not on the list\n"
+                    "2026-11-27T03:00:02Z refused <bad host>:443 sent=0 recv=0 secs=0.0 not on the list\n"
+                    "2026-11-27T03:00:03Z allowed pypi.org:443 sent=10 recv=20 secs=0.1\n")
+        _eg2 = os.path.join(_opd, "attempts", "a2")
+        os.makedirs(os.path.join(_eg2, "egress"), exist_ok=True)
+        with open(os.path.join(_eg2, "attempt.json"), "w") as f:
+            f.write('{"seat": "../x"}')
+        with open(os.path.join(_eg2, "egress", "egress.log"), "w") as f:
+            f.write("2026-11-27T03:00:04Z refused other.example.net:443 sent=0 recv=0 secs=0.0 x\n")
+        check(_refused_egress(_opd) == [("w", "docs.example.net", 2)],
+              f"OP1c the refused hosts of each seat, never an allowed row or a bad seat: {_refused_egress(_opd)}")
+        b_eg = _operator_brief("rx", [], [], [], _refused_egress(_opd))
+        check("docs.example.net x2" in b_eg and "## egress refused" in b_eg
+              and "pypi.org" not in b_eg and "other.example.net" not in b_eg and "<bad host>" not in b_eg,
+              "OP1c the brief lists a refused host with its count, fenced, and nothing else")
+        check("## egress refused" not in _operator_brief("rx", [], [], []),
+              "OP1c a run with no refused host has no egress section")
         # OP2 CaMeL/Progent capability guards on [seat.op] verbs:
         # protected escalation kinds cannot be resolved, symlinks refused,
         # retries cap at MAX_TASK_RETRIES, op replies carry advisory tag,

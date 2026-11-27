@@ -4,7 +4,8 @@
 #
 # usage:
 #   scripts/setup-hooks.sh [--configure-identity]
-#   scripts/setup-hooks.sh --selftest
+#   scripts/setup-hooks.sh --selftest          room-safe: the push gate's battery step skips itself in the room
+#   scripts/setup-hooks.sh --first-level       outside the room: proves that step really runs
 # exit: 0 installed / selftest OK, 1 a check or hook failed, 2 VOID
 set -uo pipefail
 LC_ALL=C
@@ -16,11 +17,21 @@ WANT_NAME="HashedViking"
 WANT_EMAIL="6432677+HashedViking@users.noreply.github.com"
 WANT_ID="$WANT_NAME <$WANT_EMAIL>"
 
+STUB_BATTERY='#!/bin/sh
+# stub battery: the push gate only needs it to run inside the room
+echo "ran=1 ok=1 fail=0 skipped=0 exceptions=0 floor=1"'
+
 selftest() {
-  local T rc=0 out r sample
+  # "" is the room-safe suite. --first-level is the same suite outside the
+  # room, where the push gate's cleanroom battery step can really run: inside
+  # the room that step reads "already inside cleanroom" and skips itself.
+  local mode=${1:-} label=selftest fl=0
+  [ "$mode" = --first-level ] && { label=first-level; fl=1; }
+  local T rc=0 out r sample hook_path
   unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
   T=$(mktemp -d) || exit 2
   trap 'rm -rf "${T:?}"' EXIT
+  [ "$fl" = 1 ] && mkdir -p "$T/fh"
 
   git init -q --bare "$T/remote.git" || exit 2
   git init -q -b main "$T/work" || exit 2
@@ -35,7 +46,13 @@ selftest() {
   cp "$ROOT/scripts/release-lint.py" "$T/work/scripts/release-lint.py" || exit 2
   chmod +x "$T/work/scripts/release-lint.py" || exit 2
   cp "$ROOT/test/lint/tier-a.tsv" "$T/work/test/lint/tier-a.tsv" || exit 2
-  printf '.githooks/commit-msg\n.githooks/pre-commit\n.githooks/pre-push\nkeep-list\nscripts/release-lint.py\nscripts/setup-hooks.sh\ntest/lint/tier-a.tsv\n' | LC_ALL=C sort -u > "$T/work/keep-list"
+  # The push gate's battery step needs a room and a battery: the room is the
+  # real one, the battery is a stub that only has to run INSIDE the room.
+  cp "$ROOT/test/cleanroom.sh" "$T/work/test/cleanroom.sh" || exit 2
+  chmod +x "$T/work/test/cleanroom.sh" || exit 2
+  printf '%s\n' "$STUB_BATTERY" > "$T/work/scripts/run-all-selftests.sh"
+  chmod +x "$T/work/scripts/run-all-selftests.sh" || exit 2
+  printf '.githooks/commit-msg\n.githooks/pre-commit\n.githooks/pre-push\nkeep-list\nscripts/release-lint.py\nscripts/run-all-selftests.sh\nscripts/setup-hooks.sh\ntest/cleanroom.sh\ntest/lint/tier-a.tsv\n' | LC_ALL=C sort -u > "$T/work/keep-list"
 
   git -C "$T/work" remote add origin "$T/remote.git"
   git -C "$T/work" config user.name "Wrong User"
@@ -64,6 +81,15 @@ selftest() {
 
   wgit() {
     PATH="$hook_path" OPERATOR_TIER_B=/nonexistent git -C "$T/work" "$@"
+  }
+  wpush() {
+    # At first level the push runs under a home of its own, so the gate cannot
+    # read "already inside cleanroom" and skip the step under test.
+    if [ "$fl" = 1 ]; then
+      HOME="$T/fh" PATH="$hook_path" OPERATOR_TIER_B=/nonexistent git -C "$T/work" push "$@"
+    else
+      wgit push "$@"
+    fi
   }
 
   # 1. Wrong identity refused (names fix), then accepted after --configure-identity
@@ -157,8 +183,25 @@ selftest() {
   [ "$r" -eq 0 ] || { echo "FAIL 6d valid syntax/SVG commit failed: rc=$r $out" >&2; rc=1; }
 
   # 7. pre-push: clean push succeeds; --no-verify bad commit is caught by pre-push, then fixed
-  out=$(wgit push -q origin main 2>&1); r=$?
+  out=$(wpush -q origin main 2>&1); r=$?
   [ "$r" -eq 0 ] || { echo "FAIL 7a initial clean push failed: rc=$r $out" >&2; rc=1; }
+
+  # 7a-ctl (first level only): a battery that FAILS must refuse the push. The
+  # gate runs the battery inside the room, where the tree is /work/operator, so
+  # it has to hand the room the repo-relative path: an absolute host path
+  # cannot exist there, and every Linux push was refused. This control proves
+  # the step really ran; a skipped step would let the push through.
+  if [ "$fl" = 1 ]; then
+    printf '%s\n' '#!/bin/sh' 'echo "FAIL stub battery" >&2' 'exit 1' > "$T/work/scripts/run-all-selftests.sh"
+    printf 'ctl\n' > "$T/work/note.txt"
+    wgit add note.txt
+    wgit commit -qm "control commit" || { echo "FAIL 7a-ctl the control commit" >&2; rc=1; }
+    out=$(wpush -q origin main 2>&1); r=$?
+    { [ "$r" -ne 0 ] && printf '%s' "$out" | grep -q 'cleanroom selftest battery failed'; } || {
+      echo "FAIL 7a-ctl a failing battery did not refuse the push: rc=$r $out" >&2; rc=1
+    }
+    git -C "$T/work" reset -q --hard HEAD~1
+  fi
 
   printf 'leak %s\n' "$sample" > "$T/work/note.txt"
   wgit add note.txt
@@ -221,16 +264,17 @@ PY
   git -C "$T/work" worktree remove --force "$T/topic" 2>/dev/null
 
   if [ "$rc" -eq 0 ]; then
-    echo "selftest: OK (install, identity, keep-list, symlink, commit-msg, tier-a, syntax-svg, pre-push, linked-worktree-push)"
+    echo "$label: OK (install, identity, keep-list, symlink, commit-msg, tier-a, syntax-svg, pre-push, linked-worktree-push)"
   else
-    echo "selftest: FAIL" >&2
+    echo "$label: FAIL" >&2
   fi
   exit "$rc"
 }
 
-if [ "${1:-}" = "--selftest" ]; then
-  selftest
-fi
+case "${1:-}" in
+  --selftest) selftest ;;
+  --first-level) selftest --first-level ;;
+esac
 
 cfg_id=0
 for arg in "$@"; do

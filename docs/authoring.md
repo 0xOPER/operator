@@ -23,7 +23,11 @@ see = [".github/**"]                # visibility: present in the sparse checkout
 gpu = true                          # the nvidia devices ride this seat's jails
 ro = ["/data/models"]               # read-only host paths (the model tree): mounted
                                     # at their own paths; never on a jail-owned
-                                    # mount, never the engine's own tree or state
+                                    # mount, never the engine's own tree or state.
+                                    # Beside `network`: the rule-of-two waiver
+read = ["/data/datasets/x"]         # host directories the charter lists (the read
+                                    # class): read-only, at their own paths
+env = ["tests"]                     # environments this seat may call in its jail (charter.toml)
 
 [seat.writer.budget]
 usd = 6.0                           # reservations settle against this, ALWAYS
@@ -46,21 +50,79 @@ Shipped templates default to `adapter = "stub"` and omit `[seat.op]`. Starting a
 
 - **Empty repo grants:** `[seat.op]` carries no `write` grants; its attempts are never sealed, imported, or promoted into the repository.
 - **Adapter requirement:** `[seat.op]` delivers its directive JSON via `/w/repo/report-out.json`, so choose an adapter whose manifest defines `report_mount` (`claude-code`, `opencode`, or `zcode`; `codex` and `stub` do not mount it).
-- **Bounded effect:** The engine consumes only `report.json` from an operator turn and accepts at most 8 whitelisted directives per turn from 5 verbs: `retry`, `reply`, `resolve`, `cancel`, `stop`. Host guards block `resolve` (and autonomous `retry` on `review_red`) for protected escalations (`halt`, `stop`, `security`, `ruling`, `gate_refused`, `retry_cap`, `review_red`) and enforce `MAX_TASK_RETRIES = 3`.
+- **Bounded effect:** The engine consumes only `report.json` from an operator turn and accepts at most 8 whitelisted directives per turn from 6 verbs: `retry`, `reply`, `resolve`, `cancel`, `stop`, and `net.allow` (`{"seat": "<seat>", "host": "<host>"}`: one host on 443 for a seat that already holds a network grant, inside the charter's `declared_max` and `declared_ttl`, never a denied host; `docs/charter.md`).
+- **Evidence in the brief:** the brief lists the hosts the charter's proxy refused in the run's attempts, per seat with a count, fenced as untrusted, so `net.allow` answers on evidence. Host guards block `resolve` (and autonomous `retry` on `review_red`) for protected escalations (`halt`, `stop`, `security`, `ruling`, `gate_refused`, `retry_cap`, `review_red`) and enforce `MAX_TASK_RETRIES = 3`.
 
 Every seat key: `role`, `adapter`, `human`, `write`, `read`, `see`, `network`,
 `shell`, `mcp`, `memory`, `skills`, `budget`, `model`, `repo_context`, `gpu`,
-`ro`. The team file also takes top-level `schema`, `name`, `contract`,
+`ro`, `env`. The team file also takes top-level `schema`, `name`, `contract`,
 `autonomy`, `max_parallel`, `budget`, and `mcp`; the shipped templates are the
 working examples (copy them via `bin/operator.sh init` rather than editing
 `profiles/templates/` in place, which dirties the engine repo and causes
 `ruling sign` to refuse).
 
-> **Enforceability & inert keys at v0.1:** Every shipped adapter manifest
-> declares `tested_classes = ["write"]`, so `read`, `network`, `shell`, and seat
-> `mcp` grants are currently **refused** by `bin/team.py` for all adapters.
-> `memory`, `skills`, and `mcp` declarations are currently **inert** (accepted
-> with a note, not yet wired to enforcement).
+> **Enforceability & inert keys:** `claude-code`, `codex` and `opencode` declare
+> `tested_classes = ["write", "network", "shell", "read"]`, each with
+> `net-allowed`, `shell-allowed`, `read-allowed` and `clone-allowed` conformance
+> cells (CI runs them at the pins); the others declare
+> `write` only. A grant outside its adapter's tested range is **refused** by
+> `bin/team.py`. Seat `mcp` grants are **refused** for every adapter. `memory`, `skills`, and
+> `mcp` declarations are currently **inert** (accepted with a note, not yet
+> wired to enforcement).
+
+### The seat's network (`network`)
+
+A seat asks for a network with `network = ["pypi.org"]`, or `["*"]` for the
+charter's whole reach. The charter bounds it (`docs/charter.md`): every host
+must be inside `[reach]` (its profile's categories or its `allow` list), a
+`[reach].deny` host beats every allow, and `bin/operator.sh team validate`
+refuses a grant outside it by name. In the seat's jail the egress proxy is then
+the only door: the standard proxy variables are set for every CLI and tool,
+each connection is one log row under the attempt's `egress/`, and a host
+outside the policy is refused. The broker is never proxied. Port 443 is
+served; another port is a `[reach].pins` entry. `bin/reach.py policy <dir>
+--seat <seat>` prints the policy a seat's jail runs.
+
+### The seat's reads (`read`)
+
+`read` reaches host directories, bound read-only at their own path in the
+seat's jail (`docs/charter.md`, the read class). Signed, then granted: the
+charter lists the directories a program may read, and a seat's grant names one
+of them or a directory inside it.
+
+```toml
+# charter.toml
+[reach]
+read = ["/data/datasets"]           # the owner's signature: these, and what is inside them
+```
+
+```toml
+# team.toml
+read = ["/data/datasets/x"]         # the seat's share of it
+```
+
+A grant outside the charter refuses at `team validate` by name, and again
+where the jail is built. Every path meets the environment's mount law and a
+stricter one: absolute and clean; no link anywhere on the path; never `/`, a
+system path, a container socket, the engine's own tree, its state or the
+program, nor anything at or above them; never a credential or SSH directory
+(`.ssh`, `.aws`, `.gnupg`, ...); never a home directory or anything above one,
+and never inside another user's. The directory must exist on the host where
+the seat runs. Each bind is read-only, at the path's own place, and the path
+rides the attempt's metadata.
+
+`read` beside `network` needs the signed `rule-of-two` waiver (below): a
+worker that can read a host directory and talk to the network can exfiltrate
+it. The newest arm ruling must carry it, or the seat's jail is not built.
+
+The older seat key `ro` also binds host paths read-only at their own paths, on
+the team's signature alone: no charter lists them. Its fence is the author's
+(`team.toml`); `read`'s is the owner's (`charter.toml`). It is not `read`. But
+beside `network` it is the stated exfiltration path, exactly as `read` is: a
+worker that reads a host path and talks to the network can exfiltrate it. So
+the door where every jail is built now asks the same signed `rule-of-two`
+waiver for `ro` beside `network`, with the same named fix; until now none was
+asked. What `ro` binds on its own does not change.
 
 The `stub` adapter is the fixture worker: its steps come from
 `plans/<task>.json` in the program dir (engine-side authoring -- the plan is
@@ -85,8 +147,28 @@ waits on the approvals screen until it does.
   repo text to the worker, and grants no writes (the gate gates on `write`).
 - **budget** -- accepts `usd` (team or seat ceiling; reservations settle against
   it, priced from `broker.py`'s built-in rate table), `minutes` (wall-clock
-  ceiling), and `context` (input-token budget that gates the next reservation).
+  ceiling), `context` (input-token budget that gates the next reservation), and
+  `env_minutes` (what a seat may spend inside its environments).
   Spawn reserves `min(seat, team, usd/(max_rework+1))`.
+- **env** -- the environments this seat may call in its jail, each one declared
+  in `charter.toml` (see the door below).
+
+### The environment door (`env`)
+
+A seat with `env = ["tests"]` may run commands inside the environments the
+program's `charter.toml` signs (`docs/charter.md`). Its jail gets a socket
+served by the engine, and the brief says how to use it:
+
+```sh
+python3 -I /engine/op-env.py --env tests -- <cmd...>
+```
+
+Stage what the command needs under `/w/envwork`; it is `/work` inside the
+environment. The engine launches the run through the only container door,
+verifies the arm ruling first and files a hash-chained receipt; the command's
+output comes back and its exit code is the client's. Everything else is the
+signed spec's. One request runs at a time. The door opens with the seat's turn
+and closes with it: a run in flight is killed.
 
 ### Waivers & ruling bindings
 
@@ -96,8 +178,11 @@ waits on the approvals screen until it does.
   cap gates the next reservation; an in-flight attempt may overshoot up to its
   reservation/turn cap, and USD is estimated from `broker.py`'s model price
   table).
-- `rule-of-two` -- waives overlapping write/external-input combinations when
-  flagged by `team validate`.
+- `rule-of-two` -- a seat that holds `read`, or the older key `ro`, beside
+  `network`: a worker that can read a host directory and talk to the network
+  can exfiltrate it. `team validate` names it as `needs-waiver
+  rule-of-two`, and the newest arm ruling must carry it, or the seat's jail is
+  not built.
 - `unreviewed-rows` -- waives rows without an independent reviewer.
 - `same-family-review` -- required if a worker and its reviewer share the same
   model family.
@@ -149,6 +234,7 @@ control = "tests.control"           # the twin: a dead control fails its row
 evidence = "sealed"                 # sealed | author-reachable | human
 mutable_configs = []                # optional: allowlisted runner configs left writable
 # gpu = true                        # optional: mount host nvidia devices (Voids if absent)
+# env = "tests"                     # optional: run the check in a signed environment (below)
 
 [[row]]
 id = "scope.changed"
@@ -202,7 +288,13 @@ candidate.
 
 ### Kinds
 
-- **run** -- `cmd` runs in the check jail; exit 0 is green. `contract lint`
+- **run** -- `cmd` runs in the check jail; exit 0 is green. With `env = "<name>"`
+  it runs instead in that signed environment (`docs/charter.md`): a container the
+  engine launches from the program's `charter.toml`, with the same export, the
+  same pinned oracle and runner configs mounted read-only at their paths and the
+  same `pytest-guard` files. The row's timeout may not exceed the environment's
+  wall, and its receipt names the environment, the image and a fingerprint of
+  what the check left in `/w/out`. `contract lint`
   refuses exact trivial commands (`true`, `:`, `pass`...) as well as `|| true`
   / `true ||` shell short-circuits, and requires every `run` row to carry an
   `oracle`, `control`, or `expect_base_fail = true`.
@@ -225,6 +317,49 @@ the turn exited 0, the collected report matches). A stale verdict -- one
 naming an earlier candidate -- certifies nothing and refuses by name. Red
 refuses with the attempt standing as evidence; `--changes` re-dispatches with
 the prior round riding the next pack.
+
+### A derived baseline
+
+`bin/operator.sh derive rows <work-repo> --seat <seat> --reviewer <seat>` reads
+the tree at a commit (no checkout) and writes contract rows for the runners it
+knows: pytest and unittest, the `test`, `check` and `lint` targets of a
+Makefile, the `test`, `lint` and `typecheck` scripts of a `package.json`,
+cargo and go. Each row's oracle pins what the runner reads (the test
+directory, the config, the lockfile), so a worker cannot weaken the check it
+is held to. `--at <commit>` reads that commit. Paste the rows into
+`contract.toml` and sign.
+
+`derive pin <program-dir> <run-parent> --at <commit>` runs every derived row
+once at the commit, through the check jail, and says which are red there: that
+is the known-red baseline, and done then means no new red. The pin reports and
+files nothing.
+
+A derived row is a starting point. One that needs what the jail does not have
+(an installed tree, a toolchain) is red at the pin and says so.
+
+### The seat's shell (`shell`)
+
+`shell = ["*"]` lets a seat run shell commands. On every shipped adapter the
+law is the jail, not a per-command rule: `codex` and `opencode` have no
+permission layer at their pins, and `claude-code` runs the commands its own
+analysis deems safe with no rule and asks before the rest (measured at the
+pin: a write into an existing directory runs; creating the directory asks).
+So a command's in-tree effect lands, and its out-of-tree effect (a write
+outside the repository, a host path, the network) is refused: by the jail and
+the proxy on `codex` and `opencode`, and on `claude-code` by the CLI's own
+check first, with the jail behind it. No shipped adapter enforces command
+prefixes; the grammar accepts them, for an adapter that can.
+
+**The writable clone.** A seat that holds `shell` gets a real clone in its
+jail: the repository binds read-write, `.git` with it, so the worker branches
+in it and adds worktrees of its own. The class is earned per adapter
+(`tested_classes`, behind the `shell-allowed` and `clone-allowed` cells), and
+both the grant and the class are held again where the jail is built: a seat
+on an adapter that has not earned it keeps the read-only `.git`, as a seat
+without `shell` does, and a reviewer's repository is read-only whole. Nothing
+a worker plants in the clone reaches the host (`docs/charter.md`, section 5:
+the delivery invariant and the walk's clone leg). Delivery is unchanged: the
+main work tree's files under the `write` grants, through the gate.
 
 ### Templates and state
 

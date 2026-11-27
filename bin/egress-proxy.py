@@ -47,6 +47,15 @@ HEADER = re.compile(rb"[!#$%&'*+.^_`|~0-9A-Za-z-]+:")
 DROP = (b"host:", b"connection:", b"proxy-connection:", b"keep-alive:",
         b"proxy-authorization:", b"upgrade:", b"te:")
 STAMP = "%Y-%m-%dT%H:%M:%SZ"
+# A credential shape in a request head (the request line, the headers): no
+# seat holds a usable key, so one riding a request is harvested or forged,
+# and it is refused before anything is resolved or connected. The shapes are
+# the release lint's `secret-shape` rule's; keep the two in step. The reason
+# never carries the bytes.
+SECRET_SHAPE = re.compile(
+    rb"(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}"
+    rb"|A(?:KIA|SIA)[0-9A-Z]{16}|\bsk-[A-Za-z0-9_-]{20,}"
+    rb"|xox[baprs]-[A-Za-z0-9-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY)")
 
 
 class Refused(Exception):
@@ -311,6 +320,10 @@ def handle(conn, policy, resolve_fn, connect_fn, local):
     host = conn.host
     if len(host) > 253 or not NAME.fullmatch(host):
         raise Refused("bad host name")
+    # after the host is known (the log row names it), before anything is
+    # resolved or connected
+    if SECRET_SHAPE.search(head):
+        raise Refused("a credential shape rides the request")
     ok, why = allowed(host, rules)
     if not ok:
         raise Refused(why)
@@ -640,6 +653,22 @@ def selftest():
           f"A a ClientHello naming another host: {v}")
     v, _ = run(b"CONNECT ok.test:443 HTTP/1.1\r\n\r\n" + hello(None))
     check(v[0] == "refused", f"A a ClientHello naming nothing: {v}")
+
+    # a credential shape in the request head refuses before anything connects:
+    # a harvested or forged key riding a header or a query is never forwarded.
+    # The shapes are built here, so this source holds no live-looking key
+    v, rep = run(b"CONNECT ok.test:443 HTTP/1.1\r\nHost: ok.test:443\r\n"
+                 b"Proxy-Authorization: Bearer " + b"s" + b"k-" + b"a" * 24
+                 + b"\r\n\r\n" + hello("ok.test"))
+    check(v[0] == "refused" and "credential shape" in v[1] and rep.startswith(b"HTTP/1.1 403")
+          and b"a" * 24 not in rep,
+          f"G a key shape in a header is refused, its bytes never echoed: {v}")
+    v, _ = run(b"GET http://ok.test/cb?token=" + b"gh" + b"p_" + b"b" * 30
+               + b" HTTP/1.1\r\n\r\n", setup=True)
+    check(v[0] == "refused" and "credential shape" in v[1],
+          f"G a key shape in the request line is refused: {v}")
+    v, _ = run(b"CONNECT ok.test:443 HTTP/1.1\r\nX-Note: sk-short-note\r\n\r\n" + hello("ok.test"))
+    check(v[0] == "allowed", f"G a short token-like string is not a key shape: {v}")
 
     # the port rule
     v, rep = run(b"CONNECT ok.test:22 HTTP/1.1\r\n\r\n")

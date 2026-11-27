@@ -36,10 +36,13 @@ bin/check.py
 bin/compose-fence.py
 bin/contract.py
 bin/demo.py
+bin/derive.py
 bin/egress-proxy.py
+bin/environment.py
 bin/fixtures.py
 bin/init.py
 bin/lib/jail.py
+bin/lib/op-env.py
 bin/lib/paths
 bin/lib/pytest-guard.py
 bin/lib/run-adapter.sh
@@ -48,6 +51,7 @@ bin/lint-spawn.py
 bin/memory.py
 bin/operator.sh
 bin/panel.py
+bin/reach.py
 bin/review.py
 bin/rules.py
 bin/ruling.py
@@ -68,6 +72,7 @@ config/adapters/stub.toml
 config/adapters/zcode.toml
 docs/architecture.md
 docs/authoring.md
+docs/charter.md
 docs/quickstart.md
 keep-list
 profiles/migration/contract.toml
@@ -112,7 +117,9 @@ test/lib/canary-walker.py
 test/lib/cell-driver.sh
 test/lib/cell-stub.py
 test/lib/engine-cell.sh
+test/lib/fake-container.py
 test/lib/pilot-export-selftest.sh
+test/lib/plant-hooks.sh
 test/lib/topology-drill.py
 test/lint/tier-a.tsv
 test/neuter-survivors.txt
@@ -120,6 +127,7 @@ test/neuter.py
 test/neuters.py
 test/panel-check.sh
 test/plan-template-check.sh
+test/planted-hook-walk.sh
 test/ratchet.sh
 test/ratchet.tsv
 test/scanner-canary.sh
