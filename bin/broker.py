@@ -451,6 +451,13 @@ class Handler(BaseHTTPRequestHandler):
                 log_row(path, self.server.log, status=502, out_bytes=0,
                         seat=client_seat, attempt=client_attempt, model=req_model or None)
                 return
+            if resp.length:  # http.client leaves what never arrived on length
+                # the origin closed short of the length it announced: what arrived is
+                # not the answer, though http.client hands it over without a word
+                self._refuse(502, "origin JSON response cut short")
+                log_row(path, self.server.log, status=502, out_bytes=0,
+                        seat=client_seat, attempt=client_attempt, model=req_model or None)
+                return
             try:
                 jdoc = json.loads(raw.decode("utf-8", "replace"))
                 if not req_model and isinstance(jdoc, dict) and isinstance(jdoc.get("model"), str):
@@ -531,6 +538,8 @@ class Handler(BaseHTTPRequestHandler):
             tail = b""   # incomplete trailing SSE line carried across chunks (never frozen at 64 KiB)
             read_fn = getattr(resp, "read1", resp.read)
             drain_deadline = (time.monotonic() + 1.0) if client_gone else None
+            origin_intact = True   # false once a read from the origin failed: what the
+            # client has is not the whole answer, and must not end as if it were
             while True:
                 if drain_deadline is not None and time.monotonic() >= drain_deadline:
                     break
@@ -538,6 +547,7 @@ class Handler(BaseHTTPRequestHandler):
                     data = read_fn(16384)
                 except (OSError, http.client.HTTPException):
                     self.close_connection = True
+                    origin_intact = False
                     break
                 if not data:
                     break
@@ -628,7 +638,9 @@ class Handler(BaseHTTPRequestHandler):
                             capped = True
                 except (ValueError, IndexError, AttributeError):
                     pass
-            if chunked and not capped and not client_gone:
+            # the broker's own last chunk ends only a body the origin finished: on one
+            # it cut short, a finished-looking frame would carry half an answer
+            if chunked and not capped and not client_gone and origin_intact:
                 try:
                     self.wfile.write(b"0\r\n\r\n")
                 except OSError:
@@ -1380,6 +1392,9 @@ def selftest():
                 "    b'/v1/messages?k=zero': head(SSE, cl=b'0'),\n"
                 "    b'/v1/messages?k=chunked': head(SSE, b'Transfer-Encoding: chunked\\r\\n') + "
                 "b'58\\r\\n' + sse + b'\\r\\n0\\r\\n\\r\\n',\n"
+                "    b'/v1/messages?k=cut': head(SSE, b'Transfer-Encoding: chunked\\r\\n') + "
+                "b'58\\r\\n' + sse[:40],\n"
+                "    b'/v1/messages?j=cut': head(JSON, cl=b'50') + b'{\"usage\":{}',\n"
                 "    b'/v1/messages?l=clean': head(JSON, cl=b'2') + b'{}',\n"
                 "    b'/v1/messages?l=name': head(JSON, cl=b'2') + b'{}',\n"
                 "}\n"
@@ -1600,6 +1615,18 @@ def selftest():
         check(out_m.startswith(b"HTTP/1.1 400 ") and len(rows_m) == 1
               and rows_m[0].get("status") == 400,
               f"M1 a target that is not clean wire text refuses 400 and leaves its row: {out_m[:60]!r} {rows_m}")
+        # J6 ...and a JSON body the origin cuts short is not the answer either:
+        # http.client hands over what arrived without a word, and it used to ride as a
+        # whole 200
+        out_j, _, rows_j = raw_turn_logged(b"/v1/messages?j=cut")
+        check(out_j.startswith(b"HTTP/1.1 502 ") and b'{"usage":{}' not in out_j
+              and len(rows_j) == 1 and rows_j[0].get("status") == 502,
+              f"J6 a JSON body the origin cuts short refuses 502 and leaves its row: {out_j[:60]!r} {rows_j}")
+        # K9 ...nor is a chunked one: the broker's own last chunk used to end it, and
+        # half an answer read as a whole one
+        out_k, closed_k, _ = raw_turn_logged(b"/v1/messages?k=cut")
+        check(halves(out_k)[1] == b"28\r\n" + sse_b[:40] + b"\r\n" and closed_k,
+              f"K9 a chunked body the origin cuts short ends without the broker's last chunk: {halves(out_k)[1][-48:]!r} closed={closed_k}")
         # N a usage count the origin spells as 1e400, NaN or a number no turn could
         # report used to kill the handler inside int(): on the JSON path before the
         # status, on the stream inside the finally before the row -- a delivered turn

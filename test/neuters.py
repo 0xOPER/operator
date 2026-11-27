@@ -1591,6 +1591,20 @@ NEUTERS = [
     ("BK-resp-frame-short", BK,
      'elif resp.length:',
      'elif False:'),
+    # ...and never finished by the broker: on a chunked body the origin cut short its
+    # own last chunk ended half an answer as a whole one (K9)
+    ("BK-resp-chunk-cut", BK,
+     'if chunked and not capped and not client_gone and origin_intact:',
+     'if chunked and not capped and not client_gone:'),
+    # ...the failed read is what marks the body as cut (K9)
+    ("BK-resp-chunk-cut-mark", BK,
+     'origin_intact = False',
+     'origin_intact = True'),
+    # ...and a JSON body http.client hands over short of its length is refused, not
+    # re-framed as a whole 200 (J6)
+    ("BK-resp-json-short", BK,
+     'if resp.length:  # http.client leaves what never arrived on length',
+     'if False:  # http.client leaves what never arrived on length'),
     # the same law on the way out: a client header carrying a fold or a control byte
     # reaches the origin again (L1, L3)
     ("BK-req-header-clean", BK,
