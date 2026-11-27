@@ -1943,4 +1943,34 @@ NEUTERS = [
     ("TM-shell-shape", 'bin/team.py',
      '            if v != "*" and not re.fullmatch(r"[A-Za-z0-9_./-][A-Za-z0-9_./ -]{0,63}( \\*)?", v):',
      '            if False and not re.fullmatch(r"[A-Za-z0-9_./-][A-Za-z0-9_./ -]{0,63}( \\*)?", v):'),
+
+    # --- the read class (M2): host directories the charter lists, bound read-only at
+    # their own path -- the path law (environment.py), the charter's list (reach.py,
+    # team.py), and the door where every worker jail is built (spawn.py) ---
+    ('EN-read-mountlaw', 'bin/environment.py',
+     '    why = mount_refusal(host, roots)\n    if why:\n        return why\n    p = os.path.normpath(host)\n',
+     '    p = os.path.normpath(host)\n'),
+    ('EN-read-holds-root', 'bin/environment.py',
+     '        if root.startswith(p + "/"):\n',
+     '        if False:\n'),
+    ('EN-read-credential', 'bin/environment.py',
+     '        if (part,) in CREDENTIAL_DIRS or (i and tuple(parts[i - 1:i + 1]) in CREDENTIAL_DIRS):\n',
+     '        if False:\n'),
+    ('EN-read-home', 'bin/environment.py',
+     '        if home == p or home.startswith(p + "/"):\n',
+     '        if False:\n'),
+    ('EN-read-other-home', 'bin/environment.py',
+     '        if uid != me and p.startswith(home + "/"):\n',
+     '        if False:\n'),
+    ('EN-read-link', 'bin/environment.py',
+     '        if os.path.islink(cur):\n            return f"{host!r} has a link on its path ({cur!r}): name the real directory"\n',
+     ''),
+    ('EN-read-list', 'bin/environment.py',
+     '    if "read" in reach and not (isinstance(reach["read"], list)\n'
+     '                                and all(isinstance(p, str) for p in reach["read"])):\n'
+     '        out.append("[reach] read is a list of absolute host directories")\n',
+     ''),
+    ('EN-read-charter', 'bin/environment.py',
+     '            why = read_refusal(p, read_roots(prog))\n            if why:\n                out.append(f"[reach] read {why}")\n',
+     '            pass\n'),
 ]
