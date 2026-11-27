@@ -22,6 +22,10 @@ turn.
 seat's jail runs. bin/egress-proxy.py re-reads the policy file on every
 connection. The proxy serves port 443; another port is a pin in the charter.
 
+The read class is reach too (docs/charter.md): the charter's [reach].read
+lists the host directories a seat may read, and check_read refuses a seat's
+grant outside them (a listed directory, or one inside it).
+
 usage: reach.py policy <program-dir> --seat <seat>
        reach.py allow <program-dir> --seat <seat> --host <host> [--by who]
        reach.py check <program-dir> --seat <seat>
@@ -94,6 +98,7 @@ def reach_of(prog):
             "allow": [h for h in reach.get("allow", []) if isinstance(h, str)],
             "deny": [h for h in reach.get("deny", []) if isinstance(h, str)],
             "pins": [p for p in reach.get("pins", []) if isinstance(p, str)],
+            "read": [p for p in reach.get("read", []) if isinstance(p, str)],
             "declared_max": max_ if type(max_) is int and max_ > 0 else 0,
             "declared_ttl": ttl if type(ttl) is int and ttl > 0 else DEFAULT_TTL}
 
@@ -151,6 +156,18 @@ def check_grant(prog, hosts):
         if not ok:
             raise Finding(f"network: {why}; add the host to [reach].allow or widen the profile "
                           "(the owner signs), or drop it")
+
+
+def check_read(prog, paths):
+    """Refuses a read grant the charter doesn't cover (docs/charter.md, the read
+    class): each directory is one the charter lists in [reach].read, or one inside
+    it. Finding names the fix."""
+    listed = reach_of(prog)["read"]
+    for p in paths:
+        if not any(p == r or p.startswith(r + "/") for r in listed):
+            raise Finding(f"read: {p!r} is outside the charter's read directories (listed: "
+                          f"{', '.join(listed) or 'none'}); add it to [reach].read (the owner "
+                          "signs), or drop it")
 
 
 def policy(prog, hosts, seat=None):
@@ -435,6 +452,26 @@ def selftest():
                 "G a grant with another port refuses")
         check(seat_hosts(["a.example:443", "b.example"]) == ["a.example", "b.example"],
               "G :443 is the bare host")
+        # R the read class: the charter's [reach].read lists the directories a
+        # seat may read, and a grant is one of them or inside one -- never the
+        # parent, never a sibling sharing the prefix, and nothing without a list
+        charter('schema = 1\nname = "st"\n[reach]\nread = ["/opt/datasets/x"]\n')
+        try:
+            covered = (check_read(prog, ["/opt/datasets/x"]) is None
+                       and check_read(prog, ["/opt/datasets/x/y/z"]) is None)
+        except (Refused, Finding) as e:
+            covered = f"refused: {e}"
+        check(covered is True, f"R a listed directory, and one inside it, are covered: {covered}")
+        check(reach_of(prog)["read"] == ["/opt/datasets/x"], "R the charter's list is the reach's")
+        for path in ("/opt/datasets", "/opt/datasets/x2", "/opt/datasets/y", "/opt"):
+            refused(lambda p=path: check_read(prog, [p]), "outside the charter's read directories",
+                    f"R {path} is not covered")
+        refused(lambda: check_read(prog, ["/opt/datasets/x", "/opt/other"]),
+                "outside the charter's read directories", "R one uncovered path refuses the grant")
+        charter('schema = 1\nname = "st"\n[reach]\nprofile = "dev"\n')
+        check(reach_of(prog)["read"] == [], "R a charter with no read list covers nothing")
+        refused(lambda: check_read(prog, ["/opt/datasets/x"]), "outside the charter's read directories",
+                "R a profile alone opens no read")
         # H the declared rule (docs/charter.md): net.allow widens a grant the
         # seat already holds, inside the charter's number and lifetime; every
         # one is a row in the call log; a denied host, an address, a port and

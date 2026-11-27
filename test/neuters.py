@@ -1973,4 +1973,13 @@ NEUTERS = [
     ('EN-read-charter', 'bin/environment.py',
      '            why = read_refusal(p, read_roots(prog))\n            if why:\n                out.append(f"[reach] read {why}")\n',
      '            pass\n'),
+    ('RC-read-cover', 'bin/reach.py',
+     '        if not any(p == r or p.startswith(r + "/") for r in listed):\n',
+     '        if False:\n'),
+    ('RC-read-prefix', 'bin/reach.py',
+     '        if not any(p == r or p.startswith(r + "/") for r in listed):\n',
+     '        if not any(p == r or p.startswith(r) for r in listed):\n'),
+    ('RC-read-of', 'bin/reach.py',
+     '            "read": [p for p in reach.get("read", []) if isinstance(p, str)],\n',
+     '            "read": [],\n'),
 ]
