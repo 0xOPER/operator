@@ -130,8 +130,12 @@ Rules (`bin/environment.py`, built):
 - A spec that mounts the host root, a container socket, a system directory or
   anything outside its own list refuses at validate.
 - Every run writes a receipt into the hash-chained call log: environment, image
-  digest, argv hash, exit code, duration, runtime. Artifact hashes are not
-  built yet.
+  digest, argv hash, exit code, duration, runtime, and a fingerprint of what
+  the run left in its work directory: every regular file's path and bytes,
+  within a budget of 20,000 files and 1 GiB. Past the budget the rest is
+  fingerprinted by name and size only, and the receipt says `workcap=1`. A
+  link is named, never read. Artifact globs chosen by the caller are not
+  built: the whole work directory is hashed.
 - Signing a new environment spec is reserved to the owner. Once per environment.
 - `operator environment validate <dir>` checks the charter;
   `operator environment run <dir> --env NAME -- <cmd...>` is the door.
@@ -440,7 +444,7 @@ each row by delegation.
 | # | Milestone | Un-rails | Status |
 |---|---|---|---|
 | M0 | Charter law | the signed plan | this document |
-| M1 | Environments | container and GPU work | built: the charter, the door, `env` rows, the worker socket. The exit is the parked program's two rows closing as machine rows |
+| M1 | Environments | container and GPU work | built: the charter, the door, `env` rows, the worker socket, a fingerprint of the work directory in every receipt. The exit is the parked program's two rows closing as machine rows |
 | M2 | Reach | network, shell, read | built: a seat's network from the charter, through the egress proxy; a credential shape refused on the wire; `shell` on the three adapters, the jail the law. Open: the `declared` rule, `net.allow` (with the manager), and `read` |
 | M3 | Evidence | contract authoring as a precondition | first slice built: `operator derive`. Open: the hollow twin and the `reviewed-only` label, the lint against existence-class anchors, `min_mutation_kill`, the evidence mix, the templates |
 | M4 | The manager | triage seat becomes executive | open |

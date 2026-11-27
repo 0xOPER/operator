@@ -41,6 +41,7 @@ import os
 import re
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -98,6 +99,7 @@ ENV_CLIENT = "/engine/op-env.py"  # the jailed client (bin/lib/op-env.py), read-
 DOOR_OUT = 16 * 1024              # what one answer carries back to the jail
 DOOR_IN = 512 * 1024              # the largest request the door reads
 MAX_ARGS, MAX_ARG = 64, 4096
+WORK_FILES, WORK_BYTES = 20000, 1024 * 1024 * 1024   # the receipt's fingerprint budget, at most
 
 
 class Void(Exception):
@@ -475,10 +477,11 @@ def _binds_ok(src, dst, mode):
 
 
 def run_env(prog, name, work, cmd, envs=(), mounts=(), cwd=None, timeout=None,
-            cap=LOG_CAP, check=True, work_mount=True, abort=None):
+            cap=LOG_CAP, check=True, work_mount=True, abort=None, work_caps=None):
     """One run in a signed environment. `work` is the caller's directory, writable
     at /work. `mounts` are (src, dst, mode) binds for a contract row's export and
     its read-only overlays. `abort` is an Event: set, it ends the run (rc 125).
+    `work_caps` is the fingerprint's budget (files, bytes); None is the module's.
     Returns (rc, out, meta)."""
     spec = environment(prog, name)
     if abort is not None and abort.is_set():
@@ -558,11 +561,62 @@ def run_env(prog, name, work, cmd, envs=(), mounts=(), cwd=None, timeout=None,
         rc = 124
     if aborted:
         rc = 125
+    work_h, work_capped = work_digest(work, *(work_caps or (None, None)))
     meta = {"env": name, "image": DIGEST_RE.fullmatch(spec["image"]).group(1)[:16],
             "argv": hashlib.sha256(b"\0".join(c.encode("utf-8") for c in cmd)).hexdigest()[:16],
             "rc": rc, "secs": round(time.monotonic() - t0, 3), "runtime": spec["runtime"],
-            "oom": oom, "timed_out": timed_out, "aborted": aborted}
+            "oom": oom, "timed_out": timed_out, "aborted": aborted,
+            "work": work_h, "work_capped": work_capped}
     return rc, out, meta
+
+
+def work_digest(work, cap_files=None, cap_bytes=None):
+    """A fingerprint of what a run left in its work directory: the relative
+    path and the bytes of every regular file, within a budget of files and of
+    bytes (WORK_FILES, WORK_BYTES). A link is named and never read, a linked
+    directory is not walked, and a file is opened O_NOFOLLOW, so nothing
+    outside the directory is read. Past a budget the rest of the tree is
+    fingerprinted by name and size only, and the receipt says so.
+    Returns (16 hex, capped)."""
+    cap_files = WORK_FILES if cap_files is None else cap_files
+    cap_bytes = WORK_BYTES if cap_bytes is None else cap_bytes
+    h, n, left, capped = hashlib.sha256(), 0, cap_bytes, False
+    for root, dirs, files in os.walk(work, followlinks=False):
+        linked = [d for d in dirs if os.path.islink(os.path.join(root, d))]
+        dirs[:] = sorted(d for d in dirs if d not in linked)
+        for d in sorted(linked):
+            h.update(b"D\0" + os.path.relpath(os.path.join(root, d), work).encode("utf-8", "replace") + b"\0")
+        for name in sorted(files):
+            full = os.path.join(root, name)
+            try:
+                st = os.lstat(full)
+            except OSError:
+                capped = True
+                continue
+            rel = os.path.relpath(full, work).encode("utf-8", "replace")
+            if not stat.S_ISREG(st.st_mode):
+                h.update(b"L\0" + rel + b"\0")
+                continue
+            n += 1
+            h.update(b"F\0" + rel + b"\0" + str(st.st_size).encode("ascii") + b"\0")
+            if capped or n > cap_files or st.st_size > left:
+                capped = True
+                continue
+            try:
+                fd = os.open(full, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            except OSError:
+                capped = True
+                continue
+            with os.fdopen(fd, "rb") as f:
+                while left > 0:
+                    chunk = f.read(min(1 << 20, left))
+                    if not chunk:
+                        break
+                    left -= len(chunk)
+                    h.update(chunk)
+                if f.read(1):
+                    capped = True   # the budget ended before the file did
+    return h.hexdigest()[:16], capped
 
 
 def receipt(name, meta, runfile):
@@ -571,7 +625,10 @@ def receipt(name, meta, runfile):
             "--key", f"env={name}", "--key", f"image={meta['image']}",
             "--key", f"argv={meta['argv']}", "--key", f"rc={meta['rc']}",
             "--key", f"secs={int(meta['secs'])}", "--key", f"runtime={meta['runtime']}",
-            "--", "cat", runfile]
+            "--key", f"work={meta['work']}"]
+    if meta.get("work_capped"):
+        argv += ["--key", "workcap=1"]
+    argv += ["--", "cat", runfile]
     r = sh(argv)
     if r.returncode == 3:
         raise Locked("the call log is locked")
@@ -581,9 +638,10 @@ def receipt(name, meta, runfile):
 
 
 def run_recorded(prog, name, work, cmd, envs=(), mounts=(), cwd=None, timeout=None,
-                 cap=LOG_CAP, abort=None):
+                 cap=LOG_CAP, abort=None, work_caps=None):
     """run_env plus its receipt. Returns (rc, out, meta, call_id)."""
-    rc, out, meta = run_env(prog, name, work, cmd, envs, mounts, cwd, timeout, cap, True, True, abort)
+    rc, out, meta = run_env(prog, name, work, cmd, envs, mounts, cwd, timeout, cap, True, True, abort,
+                            work_caps=work_caps)
     fd, runfile = tempfile.mkstemp(prefix="envrun.")
     try:
         with os.fdopen(fd, "wb") as f:
@@ -1110,12 +1168,46 @@ def selftest():
         check(len(as_keys) >= 4 and keys.get("env") == "t" and keys.get("image") == "a" * 16
               and keys.get("runtime") == "docker" and len(keys.get("argv", "")) == 16
               and keys.get("secs", "").isdigit()
+              and re.fullmatch("[0-9a-f]{16}", keys.get("work", ""))
               and {k.get("rc") for k in as_keys} >= {"0", "7", "137", "124"},
               f"D6 every run leaves a receipt: {as_keys[-1] if as_keys else None}")
         v = sh([os.path.join(ROOT, "bin", "call-log.sh"), "verify"])
         check(v.returncode == 0, f"D6b the receipts sit in a verifying chain: {v.stderr}")
         refused(lambda: run_recorded(prog, "nope", work, ["true"]), "no environment 'nope'",
                 "D6c an undeclared environment refuses")
+        # the fingerprint a receipt carries: what the run left in its work directory
+        wdir, tgt = os.path.join(base, "wdir"), os.path.join(base, "target")
+        os.makedirs(wdir)
+        write(tgt, "first target\n")
+        write(os.path.join(wdir, "a.txt"), "one\n")
+        os.symlink(tgt, os.path.join(wdir, "link"))
+        os.symlink(base, os.path.join(wdir, "ldir"))
+        d1 = work_digest(wdir)
+        check(re.fullmatch("[0-9a-f]{16}", d1[0]) and d1[1] is False,
+              f"D6d an honest tree is fingerprinted whole: {d1}")
+        write(os.path.join(wdir, "a.txt"), "two\n")
+        d2 = work_digest(wdir)
+        check(d2[0] != d1[0] and d2[1] is False, "D6e a file's bytes move the fingerprint")
+        write(os.path.join(wdir, "a.txt"), "one\n")
+        check(work_digest(wdir)[0] == d1[0], "D6f an unchanged tree keeps its fingerprint")
+        write(tgt, "another target, other bytes\n")
+        d3 = work_digest(wdir)
+        check(d3[0] == d1[0] and d3[1] is False,
+              f"D6g a link is named and its target never read: {d3} vs {d1}")
+        os.rename(os.path.join(wdir, "a.txt"), os.path.join(wdir, "b.txt"))
+        check(work_digest(wdir)[0] != d1[0], "D6h a renamed file moves the fingerprint")
+        os.rename(os.path.join(wdir, "b.txt"), os.path.join(wdir, "a.txt"))
+        d4, d5 = work_digest(wdir, cap_files=0), work_digest(wdir, cap_bytes=1)
+        check(d4[1] is True and d5[1] is True and d4[0] != d1[0] and d5[0] != d1[0],
+              f"D6i past a budget the fingerprint changes and says so: {d4} {d5}")
+        rc6, _out6, m6, _cid6 = run_recorded(prog, "t", wdir, ["true"], work_caps=(1, 1))
+        rows6 = [[kv.split("=", 1) for kv in ln.split("\t")[3].split(",")]
+                 for ln in (open(log, encoding="utf-8").read().splitlines() if os.path.exists(log) else [])
+                 if len(ln.split("\t")) == 10 and ln.split("\t")[2] == "env:t"]
+        last6 = dict(rows6[-1]) if rows6 else {}
+        check(rc6 == 0 and m6["work_capped"] is True and last6.get("work") == m6["work"] == d4[0]
+              and last6.get("workcap") == "1",
+              f"D6j a run past the budget files a receipt that says so: {m6} {last6}")
         good = open(cpath, encoding="utf-8").read()
 
         def swap(text):
@@ -1204,8 +1296,9 @@ def selftest():
         krows = [dict(kv.split("=", 1) for kv in ln.split("\t")[3].split(","))
                  for ln in (open(log, encoding="utf-8").read().splitlines() if os.path.exists(log) else [])
                  if len(ln.split("\t")) == 10 and ln.split("\t")[2] == "check:e1"]
-        check(krows and krows[-1].get("env") == "t" and krows[-1].get("image") == "a" * 16,
-              f"E2b the check's receipt names its environment and image: {krows[-1] if krows else None}")
+        check(krows and krows[-1].get("env") == "t" and krows[-1].get("image") == "a" * 16
+              and re.fullmatch("[0-9a-f]{16}", krows[-1].get("work", "")),
+              f"E2b the check's receipt names its environment, image and fingerprint: {krows[-1] if krows else None}")
         # F the worker's door: the socket a jail carries. bin/lib/op-env.py is
         # the client, run here as a process against the served socket
         adir_f = spawn_mod.build_attempt(e_rd, "w", ["src/**"], "integration/R", "a-door", "t1",
@@ -1400,6 +1493,21 @@ def first_level():
         check(os.path.exists(os.path.join(work, "uid"))
               and open(os.path.join(work, "uid")).read().strip() == str(os.getuid()),
               "L1b it ran as the spec's user, the engine's own uid, and wrote into the work dir")
+        check(meta["work"] == work_digest(work)[0] and meta["work_capped"] is False,
+              f"L1c a real run's fingerprint is its work directory's: {meta['work']}")
+        rc, _o, meta_b, _cid = run_recorded(prog, "t", work, bb("echo second > /work/second.txt"))
+        check(rc == 0 and meta_b["work"] != meta["work"]
+              and open(os.path.join(work, "second.txt")).read() == "second\n",
+              "L1d what a real run writes into its work directory moves the fingerprint")
+        rc, _o, meta_c, _cid = run_recorded(prog, "t", work, [BB, "true"], work_caps=(0, 0))
+        log_c = os.environ["CALL_LOG_FILE"]
+        rows_c = [dict(kv.split("=", 1) for kv in ln.split("\t")[3].split(","))
+                  for ln in (open(log_c, encoding="utf-8").read().splitlines() if os.path.exists(log_c) else [])
+                  if len(ln.split("\t")) == 10 and ln.split("\t")[2] == "env:t"]
+        check(rc == 0 and len(rows_c) >= 2 and rows_c[-2].get("work") == meta_b["work"]
+              and "workcap" not in rows_c[-2] and meta_c["work_capped"] is True
+              and rows_c[-1].get("workcap") == "1" and rows_c[-1].get("work") == meta_c["work"],
+              f"L1e the real receipts carry the fingerprint, and say when it is capped: {rows_c[-2:]}")
         ifs = [ln for ln in open(os.path.join(work, "dev")) if ":" in ln] if os.path.exists(os.path.join(work, "dev")) else []
         check(len(ifs) == 1 and ifs[0].strip().startswith("lo:"), f"L2 no network but loopback: {ifs}")
         rc, out, _ = run_env(prog, "t", work, bb("touch /x 2>/dev/null && echo WRITABLE || echo ro"))
@@ -1447,8 +1555,9 @@ def first_level():
         with open(os.environ["CALL_LOG_FILE"], encoding="utf-8") as f:
             krows = [dict(kv.split("=", 1) for kv in ln.split("\t")[3].split(","))
                      for ln in f.read().splitlines() if ln.split("\t")[2] == "check:e1"]
-        check(krows and krows[-1].get("env") == "t" and krows[-1].get("image") == image.rsplit(":", 1)[-1][:16],
-              f"L7b the check's receipt names its environment and image: {krows[-1] if krows else None}")
+        check(krows and krows[-1].get("env") == "t" and krows[-1].get("image") == image.rsplit(":", 1)[-1][:16]
+              and re.fullmatch("[0-9a-f]{16}", krows[-1].get("work", "")),
+              f"L7b the check's receipt names its environment, image and fingerprint: {krows[-1] if krows else None}")
         # L8 a worker's jail sees no container socket
         sys.path.insert(0, os.path.join(ROOT, "bin", "lib"))
         from jail import bwrap_args  # noqa: E402

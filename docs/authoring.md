@@ -244,7 +244,8 @@ candidate.
   engine launches from the program's `charter.toml`, with the same export, the
   same pinned oracle and runner configs mounted read-only at their paths and the
   same `pytest-guard` files. The row's timeout may not exceed the environment's
-  wall, and its receipt names the environment and the image. `contract lint`
+  wall, and its receipt names the environment, the image and a fingerprint of
+  what the check left in `/w/out`. `contract lint`
   refuses exact trivial commands (`true`, `:`, `pass`...) as well as `|| true`
   / `true ||` shell short-circuits, and requires every `run` row to carry an
   `oracle`, `control`, or `expect_base_fail = true`.

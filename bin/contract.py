@@ -1333,7 +1333,8 @@ def run_check(row, prog, repo, commit, arm, results, prog_key, record_log=True, 
         cid = record(row["id"], commit, arm, rc, runfile, prog_key,
                      pin=pin if (row["oracle"] or row.get("expect_base_fail")) else None,
                      overlay_off=not binds_ok,
-                     extra=(("env", row["env"]), ("image", env_meta["image"])) if env_meta else ())
+                     extra=(("env", row["env"]), ("image", env_meta["image"]),
+                            ("work", env_meta["work"])) if env_meta else ())
         return rc, runfile, cid
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
