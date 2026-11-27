@@ -431,10 +431,15 @@ if '"read"' not in line.group(0):
     text = text.replace(line.group(0), line.group(0)[:-1] + ', "read"]', 1)
 pathlib.Path(out).write_text(text, encoding="utf-8")
 PY
-      emit_shell "\"cat $RD_DATASET/x/data.txt > src/read-ok.txt\"" > "$D/tool.json"
+      # The read keeps what it reported: on a failure the receipt names the refusal.
+      emit_shell "\"cat $RD_DATASET/x/data.txt > src/read-ok.txt 2>&1\"" > "$D/tool.json"
       OPERATOR_ADAPTERS="$RD_ADAPTERS" engine_cell_run rd-in-dir src || { cleanup_daemons; exit 1; }
-      [ "$(cat "$ADIR/repo/src/read-ok.txt" 2>/dev/null)" = "READ-BODY-4b7a" ] \
-        || { echo "  read-allowed: FAIL (the seat didn't read inside its directory: $(head -c 120 "$ADIR/repo/src/read-ok.txt" 2>/dev/null))"; cleanup_daemons; exit 1; }
+      [ "$(cat "$ADIR/repo/src/read-ok.txt" 2>/dev/null)" = "READ-BODY-4b7a" ] || {
+        echo "  read-allowed: FAIL (the seat didn't read inside its directory; the read said: $(head -c 160 "$ADIR/repo/src/read-ok.txt" 2>/dev/null))"
+        echo "    attempt meta: $(python3 -c 'import json,sys;m=json.load(open(sys.argv[1]));print({k:m.get(k) for k in ("adapter","read","ro","network","shell")})' "$ADIR/attempt.json" 2>&1 | head -c 200)"
+        echo "    --- transcript.out (tail) ---"; tail -6 "$ADIR/transcript.out" 2>/dev/null | cut -c1-200 | sed 's/^/    /'
+        echo "    --- transcript.err (tail) ---"; tail -4 "$ADIR/transcript.err" 2>/dev/null | cut -c1-200 | sed 's/^/    /'
+        cleanup_daemons; exit 1; }
       for twin in "parent:$RD_DATASET/outside.txt" "sibling:$RD_DATASET/x2/outside.txt" \
                   "dotdot:$RD_DATASET/x/../outside.txt" "link:$RD_DATASET/x/link-out"; do
         name=${twin%%:*}; path=${twin#*:}
