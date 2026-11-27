@@ -176,7 +176,8 @@ and the broker stays the only door that has one.
 - `network`, `shell` and `read` join an adapter's `tested_classes` only when a
   conformance cell exists for that adapter and class. The grant is earned per
   adapter, not declared.
-- `net.allow` is a manager verb, bounded by the `declared` rule.
+- `net.allow` is a manager verb, bounded by the `declared` rule. Built as the operator
+  seat's verb (below); the manager inherits it.
 - A credential shape riding what the egress proxy can read (the CONNECT line
   and its headers, a plain-HTTP request) is refused and logged, naming the
   host and never the bytes. Inside an HTTPS tunnel the proxy reads nothing:
@@ -194,8 +195,13 @@ adapters' `tested_classes`: commands run inside the jail and the jail is the
 law, because no shipped adapter keeps a per-command law (`claude-code` admits
 the commands its own sandbox deems safe; the other two have no permission
 layer at their pins), so the prefix scoping the plan imagined waits for an
-adapter that can. Open: the `declared` rule and the `net.allow` verb (they
-come with the manager), `read`, and the writable clone. Not buildable as the
+adapter that can. The `declared` rule is built: `operator reach allow <dir>
+--seat <seat> --host <host>`, and the operator seat's `net.allow` directive,
+open one host on 443 for a seat that already holds a network grant, for
+`declared_ttl` seconds while fewer than `declared_max` are live, never a
+denied host; every one is a row in the call log, and it rides the seat's next
+turn. Open: `read` (neither the plan nor this charter says yet what it
+reaches), and the writable clone. Not buildable as the
 plan first wrote it: "egress bodies" —
 an HTTPS tunnel's body is encrypted, and the broker's request bodies are the
 worker's own prompts, where key-shaped strings are often honest fixtures.

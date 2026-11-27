@@ -1496,7 +1496,7 @@ def egress_plan(attempt, meta):
     os.makedirs(edir, exist_ok=True)
     policy_path, log_path = os.path.join(edir, "policy"), os.path.join(edir, "egress.log")
     try:
-        lines = reach_mod.policy(meta.get("prog"), meta["network"])
+        lines = reach_mod.policy(meta.get("prog"), meta["network"], meta.get("seat"))
     except reach_mod.Finding as e:
         raise Refused(f"the seat's network grant isn't inside the charter's reach: {e}")
     with open(policy_path, "w", encoding="ascii") as f:
@@ -3303,6 +3303,24 @@ def selftest():
                                          "pin api.example.org 192.0.2.10 8443"]
                   and log_p == os.path.join(adir_sn, "egress", "egress.log"),
                   f"S-net the policy under the attempt is the charter's reach, narrowed: {pol_t!r}")
+            # a live declaration rides its own seat's policy, with its expiry,
+            # and no other seat's (docs/charter.md, the declared rule)
+            import reach as reach_mod
+            until_d = reach_mod.stamp(time.time() + 600)
+            dec_p = os.path.join(prog_sn, reach_mod.DECLARED_FILE)
+            os.makedirs(os.path.dirname(dec_p), exist_ok=True)
+            with open(dec_p, "w") as f:
+                json.dump([{"host": "declared.example.net", "seat": "w", "until": until_d,
+                            "by": "op", "at": reach_mod.stamp(time.time())},
+                           {"host": "other.example.net", "seat": "x", "until": until_d,
+                            "by": "op", "at": reach_mod.stamp(time.time())}], f)
+            pol_d, _ = egress_plan(adir_sn, meta_load(adir_sn))
+            with open(pol_d, encoding="ascii") as f:
+                pol_d_t = f.read().splitlines()
+            check(f"declared.example.net until {until_d}" in pol_d_t
+                  and not any("other.example.net" in ln for ln in pol_d_t)
+                  and pol_d_t.index(f"declared.example.net until {until_d}") == 3,
+                  f"S-net a live declaration rides its own seat's policy with its expiry: {pol_d_t}")
             proc_n, sock_n, room_n = egress_start(pol_p, log_p)
             check(sock_n is not None and os.path.exists(sock_n) and len(sock_n.encode()) < 100,
                   "S-net the proxy binds on a short path")
