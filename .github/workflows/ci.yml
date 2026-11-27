@@ -44,6 +44,7 @@ jobs:
           test/cleanroom.sh test/canary-walk.sh --selftest
           test/cleanroom.sh test/topology-drill.sh --selftest
           test/cleanroom.sh test/fence-placement.sh --selftest
+          test/cleanroom.sh test/planted-hook-walk.sh --selftest
       - name: First-level selftests, hollow-battery, and sealed probes (outside the room)
         run: |
           cd "$RUNNER_TEMP/clone"
@@ -52,6 +53,8 @@ jobs:
           test/sealed-probe-check.sh
           test/canary-walk.sh
           test/topology-drill.sh
+          test/planted-hook-walk.sh
+          test/planted-hook-walk.sh --sabotage
       - name: The room hides home and the network and keeps the tree read-only
         run: |
           cd "$RUNNER_TEMP/clone"

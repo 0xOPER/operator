@@ -114,6 +114,7 @@ test/lib/cell-stub.py
 test/lib/engine-cell.sh
 test/lib/fake-container.py
 test/lib/pilot-export-selftest.sh
+test/lib/plant-hooks.sh
 test/lib/topology-drill.py
 test/lint/tier-a.tsv
 test/neuter-survivors.txt
@@ -121,6 +122,7 @@ test/neuter.py
 test/neuters.py
 test/panel-check.sh
 test/plan-template-check.sh
+test/planted-hook-walk.sh
 test/ratchet.sh
 test/ratchet.tsv
 test/scanner-canary.sh

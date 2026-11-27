@@ -181,6 +181,10 @@ and the broker stays the only door that has one.
 A worker's `.git` is bound read-only today, which rules out worktree fan-out. A
 seat that needs fan-out gets a real writable clone only when a conformance
 cell proves that a hook planted there never runs host-side.
+`test/planted-hook-walk.sh` is that proof's standing leg: it plants what a
+writable clone could plant, runs the real delivery chain, and checks that
+nothing fired on the host. A control shows the plants are live, and a sabotage
+mode shows the walk can fail.
 
 ## 6. The manager
 

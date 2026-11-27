@@ -117,4 +117,5 @@ Every guarantee above is bounded by the explicit threat model in `LIMITATIONS`:
 | `test/sealed-probe-check.sh` & `test/forge/sealed.py` | All 5 sealed probes: PID-1 environment cleanliness, hostile bind cleanup, oracle-pin void checks, and process isolation. |
 | `scripts/ast-mutants.py` | Deterministic AST mutation generation and strict kill-rate scoring across all 11 TCB control-plane modules listed in `CLAIMS.md`. |
 | `test/conformance.sh`, `test/canary-walk.sh`, `test/topology-drill.sh`, `test/fence-placement.sh` | Adapter confinement cells, login-canary isolation, network-topology egress refusal, and hook placement proofs. |
+| `test/planted-hook-walk.sh` | The delivery chain never runs git inside an attempt: hooks and config commands a writable `.git` could plant never fire on the host (with a control that fires and a sabotage mode that shows the walk can fail). |
 | `scripts/release-lint.py` & `test/ratchet.sh` | Tier-A export hygiene (no host paths, secrets, internal names), `keep-list` sync, and static analysis ratchets. |
