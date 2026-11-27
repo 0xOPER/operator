@@ -1606,6 +1606,24 @@ NEUTERS = [
     ("BK-req-target-clean", BK,
      'if not REQUEST_TARGET_RE.fullmatch(self.path):',
      'if False:'),
+    # a usage count the ledger adds is a finite number or the ceiling: int() of 1e400
+    # or NaN killed the handler before its row, on the JSON path before the status and
+    # on the stream inside the finally (N1, H2c)
+    ("BK-usage-count-finite", BK,
+     'return min(int(v), USAGE_CEILING) if math.isfinite(v) else USAGE_CEILING',
+     'return int(v)'),
+    # ...and a float no larger than the ceiling, or the cost leaves what a float holds (N4)
+    ("BK-usage-count-ceiling", BK,
+     'return min(int(v), USAGE_CEILING) if math.isfinite(v) else USAGE_CEILING',
+     'return int(v) if math.isfinite(v) else USAGE_CEILING'),
+    # ...an integer too: its product with a price raised the same way (N3)
+    ("BK-usage-count-int", BK,
+     'return min(v, USAGE_CEILING)',
+     'return v'),
+    # ...and the row stays strict JSON: a non-finite count is null, never Infinity (N1)
+    ("BK-usage-ledger-null", BK,
+     'if isinstance(v, float) and not math.isfinite(v):',
+     'if False:'),
     # --- the sealed check's export: the candidate's exec bit ---
     # it rides at all: without it a script the candidate adds isn't executable (K9a)
     ("CT-exec-bit", CT,

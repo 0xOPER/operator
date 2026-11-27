@@ -26,6 +26,7 @@ import hashlib
 import hmac
 import http.client
 import json
+import math
 import os
 import re
 import socket
@@ -67,23 +68,35 @@ def _merge_usage(cur, nxt):
     return merged
 
 
+# a usage count the ledger adds: no honest turn reports more, and a count the origin
+# spelled as 1e400 or NaN is this ceiling -- over any cap, and finite wherever it is summed
+USAGE_CEILING = 1 << 62
+
+
+def _count(v):
+    """A usage count as the ledger adds it. A finite number is itself, clamped to the
+    ceiling (a larger one raised inside the cost, and killed the handler before its
+    row); a non-finite one is the ceiling; anything that is not a number is 0."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return 0
+    if isinstance(v, int):        # always finite, and isfinite() of a big one overflows
+        return min(v, USAGE_CEILING)
+    return min(int(v), USAGE_CEILING) if math.isfinite(v) else USAGE_CEILING
+
+
 def _input_tokens_of(usage):
     if not isinstance(usage, dict):
         return 0
-    return sum(
-        int(usage.get(k) or 0) for k in (
-            "input_tokens",
-            "cache_read_input_tokens",
-            "cache_creation_input_tokens")
-        if isinstance(usage.get(k), (int, float))
-    )
+    return sum(_count(usage.get(k)) for k in (
+        "input_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens"))
 
 
 def _output_tokens_of(usage):
     if not isinstance(usage, dict):
         return 0
-    v = usage.get("output_tokens")
-    return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else 0
+    return _count(usage.get("output_tokens"))
 
 
 # Deterministic conservative per-1M-token USD table: (uncached_in, cache_read, cache_write, out)
@@ -121,12 +134,12 @@ def _compute_cost_usd(model_name, usage):
             rates = r_tuple
             break
     p_in, p_cr, p_cw, p_out = rates
-    raw_in = int(usage.get("input_tokens") or 0) if isinstance(usage.get("input_tokens"), (int, float)) else 0
-    cr = int(usage.get("cache_read_input_tokens") or 0) if isinstance(usage.get("cache_read_input_tokens"), (int, float)) else 0
-    cw = int(usage.get("cache_creation_input_tokens") or 0) if isinstance(usage.get("cache_creation_input_tokens"), (int, float)) else 0
+    raw_in = _count(usage.get("input_tokens"))
+    cr = _count(usage.get("cache_read_input_tokens"))
+    cw = _count(usage.get("cache_creation_input_tokens"))
     details = usage.get("input_tokens_details")
     if isinstance(details, dict) and isinstance(details.get("cached_tokens"), (int, float)):
-        oai_cached = int(details.get("cached_tokens") or 0)
+        oai_cached = _count(details.get("cached_tokens"))
         cr = max(cr, oai_cached)
         uncached_in = max(0, raw_in - oai_cached)
     else:
@@ -206,10 +219,24 @@ def forwarded_response_header(k, v):
                                    or lk.startswith(FORWARDED_HEADER_PREFIXES))
 
 
+def _ledger_json(v):
+    """The row is strict JSON: a non-finite number in what the origin reported (a
+    usage count spelled 1e400 or NaN) is written as null, never as Infinity or NaN."""
+    if isinstance(v, float) and not math.isfinite(v):
+        return None
+    if isinstance(v, dict):
+        return {k: _ledger_json(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_ledger_json(x) for x in v]
+    return v
+
+
 def log_row(path, log, **kv):
     for opt_k in ("seat", "attempt", "model", "cost_usd", "client_gone"):
         if kv.get(opt_k) is None:
             kv.pop(opt_k, None)
+    if isinstance(kv.get("usage"), dict):
+        kv["usage"] = _ledger_json(kv["usage"])
     row = {"t": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
            "route": path, **kv}
     with _LOG:
@@ -540,11 +567,10 @@ class Handler(BaseHTTPRequestHandler):
                                     usage = _merge_usage(usage, u)
                                     if cap and sum([
                                             prev_in,
-                                            *(int(usage.get(k) or 0) for k in (
+                                            *(_count(usage.get(k)) for k in (
                                                 "input_tokens",
                                                 "cache_read_input_tokens",
-                                                "cache_creation_input_tokens")
-                                              if isinstance(usage.get(k), (int, float)))
+                                                "cache_creation_input_tokens"))
                                     ]) > cap:
                                         # the turn's context crossed the
                                         # ceiling: CUT the stream here -- the
@@ -1023,6 +1049,13 @@ def selftest():
                 "        n = int(self.headers.get('Content-Length') or 0)\n"
                 "        req = json.loads(self.rfile.read(n).decode() or '{}')\n"
                 "        mode = req.get('mode', 'nested')\n"
+                "        if mode == 'inf':\n"
+                "            body = b'data: {\"type\":\"message_start\",\"usage\":{\"input_tokens\":1e400}}\\n\\n'"
+                " + b'data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"TAIL\"}}\\n\\n'\n"
+                "            self.send_response(200)\n"
+                "            self.send_header('Content-Type','text/event-stream')\n"
+                "            self.send_header('Content-Length', str(len(body)))\n"
+                "            self.end_headers(); self.wfile.write(body); return\n"
                 "        if mode == 'json':\n"
                 "            body = json.dumps({'id':'m1','usage':{'input_tokens':800,'output_tokens':12}}).encode()\n"
                 "            self.send_response(200)\n"
@@ -1092,6 +1125,24 @@ def selftest():
         r_hb.read()
         check(r_hb.status == 502,
               f"H2b oversized non-streaming JSON response refuses 502: {r_hb.status}")
+        # H2c ...and a stream whose usage is spelled 1e400 cuts at the ceiling like any
+        # other: int() of it used to raise inside the loop and again inside the finally,
+        # so the turn ended with no row and nothing charged. The four turns above have
+        # their rows before this one counts from here.
+        rows_after(log_h2, 3)
+        c_hc = UnixH2()
+        c_hc.request("POST", "/v1/messages", body=json.dumps({"mode": "inf"}),
+                     headers={"Content-Type": "application/json"})
+        r_hc = c_hc.getresponse()
+        try:
+            tail_hc = r_hc.read()
+        except (_hc.IncompleteRead, OSError):
+            tail_hc = b"cut"
+        rows_hc = rows_after(log_h2, 4)
+        check(b"TAIL" not in tail_hc and len(rows_hc) == 1 and rows_hc[0].get("capped") is True
+              and rows_hc[0].get("usage", {}).get("input_tokens") is None
+              and 1e13 < (rows_hc[0].get("cost_usd") or 0) < 1e14,
+              f"H2c a stream whose usage is 1e400 cuts at the ceiling and gets its row: {tail_hc[:40]!r} {rows_hc}")
         p_bh2.terminate()
         p_oh2.terminate()
         p_bh2.wait(timeout=10)
@@ -1306,7 +1357,13 @@ def selftest():
                 "        out += b'Content-Length: ' + cl + b'\\r\\n'\n"
                 "    return out + b'\\r\\n'\n"
                 "JSON, SSE = b'application/json', b'text/event-stream'\n"
+                "inf_j = b'{\"usage\":{\"input_tokens\":1e400,\"output_tokens\":1}}'\n"
+                "huge_j = b'{\"usage\":{\"input_tokens\":1' + b'0' * 320 + b',\"output_tokens\":1}}'\n"
+                "float_j = b'{\"usage\":{\"input_tokens\":1e300,\"output_tokens\":1}}'\n"
                 "REPLIES = {\n"
+                "    b'/v1/messages?j=usage-inf': head(JSON, cl=str(len(inf_j)).encode()) + inf_j,\n"
+                "    b'/v1/messages?j=usage-huge': head(JSON, cl=str(len(huge_j)).encode()) + huge_j,\n"
+                "    b'/v1/messages?j=usage-float': head(JSON, cl=str(len(float_j)).encode()) + float_j,\n"
                 "    b'/v1/messages?j=json': head(JSON, b'X-Request-Id: req-j\\r\\n"
                 "retry-after: 3\\r\\nX-Ratelimit-Remaining-Requests: 9\\r\\n"
                 "X-Should-Retry: one\\r\\n two\\r\\nRetry-After: 3\\x00\\r\\n"
@@ -1543,6 +1600,26 @@ def selftest():
         check(out_m.startswith(b"HTTP/1.1 400 ") and len(rows_m) == 1
               and rows_m[0].get("status") == 400,
               f"M1 a target that is not clean wire text refuses 400 and leaves its row: {out_m[:60]!r} {rows_m}")
+        # N a usage count the origin spells as 1e400, NaN or a number no turn could
+        # report used to kill the handler inside int(): on the JSON path before the
+        # status, on the stream inside the finally before the row -- a delivered turn
+        # with nothing in the ledger. It is now a count over any ceiling, and the row
+        # keeps a non-finite one as null
+        bodies_n = {
+            b"/v1/messages?j=usage-inf": (b'{"usage":{"input_tokens":1e400,"output_tokens":1}}',
+                                          None, "N1 a JSON turn whose usage is 1e400"),
+            b"/v1/messages?j=usage-huge": (b'{"usage":{"input_tokens":1' + b"0" * 320
+                                          + b',"output_tokens":1}}', 10 ** 320,
+                                          "N3 a JSON turn whose usage is an integer no float holds"),
+            b"/v1/messages?j=usage-float": (b'{"usage":{"input_tokens":1e300,"output_tokens":1}}',
+                                            1e300, "N4 a JSON turn whose usage is 1e300"),
+        }
+        for target_n, (body_n, count_n, label_n) in bodies_n.items():
+            out_n, _, rows_n = raw_turn_logged(target_n)
+            check(halves(out_n)[1] == body_n and len(rows_n) == 1 and rows_n[0].get("status") == 200
+                  and rows_n[0].get("usage", {}).get("input_tokens") == count_n
+                  and 1e13 < (rows_n[0].get("cost_usd") or 0) < 1e14,
+                  f"{label_n} is answered and still gets its row: {out_n[:60]!r} {rows_n}")
         p_rawbr.terminate()
         p_raw.terminate()
         p_rawbr.wait(timeout=10)
