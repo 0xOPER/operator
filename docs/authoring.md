@@ -23,7 +23,8 @@ see = [".github/**"]                # visibility: present in the sparse checkout
 gpu = true                          # the nvidia devices ride this seat's jails
 ro = ["/data/models"]               # read-only host paths (the model tree): mounted
                                     # at their own paths; never on a jail-owned
-                                    # mount, never the engine's own tree or state
+                                    # mount, never the engine's own tree or state.
+                                    # Beside `network`: the rule-of-two waiver
 read = ["/data/datasets/x"]         # host directories the charter lists (the read
                                     # class): read-only, at their own paths
 env = ["tests"]                     # environments this seat may call in its jail (charter.toml)
@@ -115,9 +116,13 @@ worker that can read a host directory and talk to the network can exfiltrate
 it. The newest arm ruling must carry it, or the seat's jail is not built.
 
 The older seat key `ro` also binds host paths read-only at their own paths, on
-the team's signature alone: no charter lists them and no waiver is asked
-beside `network`. Its fence is the author's (`team.toml`); `read`'s is the
-owner's (`charter.toml`). It is not closed.
+the team's signature alone: no charter lists them. Its fence is the author's
+(`team.toml`); `read`'s is the owner's (`charter.toml`). It is not `read`. But
+beside `network` it is the stated exfiltration path, exactly as `read` is: a
+worker that reads a host path and talks to the network can exfiltrate it. So
+the door where every jail is built now asks the same signed `rule-of-two`
+waiver for `ro` beside `network`, with the same named fix; until now none was
+asked. What `ro` binds on its own does not change.
 
 The `stub` adapter is the fixture worker: its steps come from
 `plans/<task>.json` in the program dir (engine-side authoring -- the plan is
@@ -173,10 +178,11 @@ and closes with it: a run in flight is killed.
   cap gates the next reservation; an in-flight attempt may overshoot up to its
   reservation/turn cap, and USD is estimated from `broker.py`'s model price
   table).
-- `rule-of-two` -- a seat that holds `read` beside `network`: a worker that
-  can read a host directory and talk to the network can exfiltrate it. `team
-  validate` names it as `needs-waiver rule-of-two`, and the newest arm ruling
-  must carry it, or the seat's jail is not built.
+- `rule-of-two` -- a seat that holds `read`, or the older key `ro`, beside
+  `network`: a worker that can read a host directory and talk to the network
+  can exfiltrate it. `team validate` names it as `needs-waiver
+  rule-of-two`, and the newest arm ruling must carry it, or the seat's jail is
+  not built.
 - `unreviewed-rows` -- waives rows without an independent reviewer.
 - `same-family-review` -- required if a worker and its reviewer share the same
   model family.

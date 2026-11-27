@@ -224,8 +224,12 @@ waiver before; no door asked for it). `read` is in the `tested_classes` of
 conformance cell CI runs at the pins: the seat reads inside its directory,
 and the directory above, a sibling, `..` and a link pointing out are
 unreachable. The older seat key `ro` binds host paths the same way on the
-team's signature alone: no charter, no waiver. It is not `read`, and it is
-not closed.
+team's signature alone: no charter lists them, and it is not `read`. It was
+the stated exfiltration path with no waiver at all (measured: one turn read a
+host directory with the proxy in the same jail). So beside a `network` grant
+the door now asks for the same signed `rule-of-two` waiver, with the same
+named fix: the jail is not built without it. What `ro` binds on its own does
+not change.
 
 A worker's `.git` is bound read-only today, which rules out worktree fan-out. A
 seat that needs fan-out gets a real writable clone only when a conformance cell
@@ -451,7 +455,7 @@ control is removed.
 |---|---|---|
 | credential broker | a prompt-injected worker exfiltrates the key | the canary walk, the topology drill, the broker selftest |
 | jail and git-object write gate | host damage, out-of-grant writes, symlink and hook smuggling | the conformance cells, the import gate arms |
-| the read class: the charter's list, the path law, and the `rule-of-two` waiver, all held again where the jail is built | a prompt-injected worker exfiltrates a host directory beside a network grant, or reads the engine's own tree, a credential directory or a home | the read arms of the environment, reach, team and spawn selftests (20 neuter rows), the `read-allowed` cell |
+| the read class: the charter's list, the path law, and the `rule-of-two` waiver, all held again where the jail is built | a prompt-injected worker exfiltrates a host directory beside a network grant, or reads the engine's own tree, a credential directory or a home | the read arms of the environment, reach, team and spawn selftests (20 neuter rows), the `read-allowed` cell; the same waiver for the older key `ro` beside `network`: the ro arms of the team and spawn selftests (3 neuter rows) |
 | the delivery invariant: the engine runs git inside an attempt only while it builds it | a hook or config command planted in a writable `.git` (`core.fsmonitor`, a hook, a credential helper) runs on the host through the engine | `test/planted-hook-walk.sh`, its chain leg and its re-drive leg, each with a sabotage; `GIT_FUNCTIONS` and `GIT_PARENT_FUNCTIONS`, held by `bin/spawn.py --selftest` (4 neuter rows) |
 | sealed oracle, runner-config seal, `pytest-guard` | test tampering, fake green | the hollow battery, the sealed probes |
 | dual gate with provenanced verdicts | forged or stale review | the review suite's forgery arms |
@@ -492,7 +496,7 @@ each row by delegation.
 |---|---|---|---|
 | M0 | Charter law | the signed plan | this document |
 | M1 | Environments | container and GPU work | built: the charter, the door, `env` rows, the worker socket, a fingerprint of the work directory in every receipt. The exit is the parked program's two rows closing as machine rows |
-| M2 | Reach | network, shell, read | built: a seat's network from the charter, through the egress proxy; a credential shape refused on the wire; `shell` on the three adapters, the jail the law; `read`: host directories the charter lists, bound read-only at their own path, with the signed `rule-of-two` waiver beside `network`; the `declared` rule and the operator's `net.allow`, its brief naming the hosts the charter refused. Open: the writable clone (not built; the seam it waited on is closed, section 5) |
+| M2 | Reach | network, shell, read | built: a seat's network from the charter, through the egress proxy; a credential shape refused on the wire; `shell` on the three adapters, the jail the law; `read`: host directories the charter lists, bound read-only at their own path, with the signed `rule-of-two` waiver beside `network`, asked for the older key `ro` too; the `declared` rule and the operator's `net.allow`, its brief naming the hosts the charter refused. Open: the writable clone (not built; the seam it waited on is closed, section 5) |
 | M3 | Evidence | contract authoring as a precondition | first slice built: `operator derive`. Open: the hollow twin and the `reviewed-only` label, the lint against existence-class anchors, `min_mutation_kill`, the evidence mix, the templates |
 | M4 | The manager | triage seat becomes executive | open |
 | M5 | Enclose | external orchestrators as workers or managers | open, gated on probes |

@@ -710,8 +710,8 @@ NEUTERS = [
      '    if not meta.get("gpu"):\n        return []',
      '    if True:\n        return []', SPF),
     ("SP-seat-ro", SP,
-     '    for r in meta.get("ro") or []:\n        flat += ["--ro-bind", r, r]',
-     '    for r in []:\n        flat += ["--ro-bind", r, r]', SPF),
+     '    flat += ro_binds(attempt, meta)\n',
+     '    pass\n', SPF),
     ("TM-seat-flags", TM,
      '                for p in (v, real):\n'
      '                    if any(p == q or p.startswith(q + "/") for q in JAIL_OWNED):\n'
@@ -2009,11 +2009,11 @@ NEUTERS = [
      '        reach_mod.check_read(prog, paths)\n',
      '        pass\n'),
     ('SP-read-waiver', 'bin/spawn.py',
-     '        if arm is None or "rule-of-two" not in (arm[1].get("waivers") or []):\n',
-     '        if False:\n'),
+     '    if arm is None or "rule-of-two" not in (arm[1].get("waivers") or []):\n',
+     '    if False:\n'),
     ('SP-read-ruling', 'bin/spawn.py',
-     '        arm = ruling_mod.newest(prog, "arm")\n',
-     '        arm = None\n'),
+     '    arm = ruling_mod.newest(meta["prog"], "arm")\n',
+     '    arm = None\n'),
 
     # --- the delivery invariant, made whole (M2): after the build the engine asks
     # git nothing of an attempt. adapter_prepare reads the build's own listing
@@ -2035,4 +2035,18 @@ NEUTERS = [
     ('SP-git-parent-only', 'bin/spawn.py',
      '                if not on_parent:\n',
      '                if False:\n'),
+
+    # --- the rule of two for the older seat key ro (M2): beside a network grant its
+    # door (ro_binds) is the same exfiltration path a read grant is, so it asks for
+    # the same signed waiver (rule_of_two); what ro binds on its own is unchanged.
+    # team.py names the waiver at validate for ro as it does for read ---
+    ('SP-ro-waiver', 'bin/spawn.py',
+     '        rule_of_two(attempt, meta, "an ro path")\n',
+     '        pass\n'),
+    ('SP-ro-waiver-opens', 'bin/spawn.py',
+     '        rule_of_two(attempt, meta, "an ro path")\n',
+     '        rule_of_two(attempt, {**meta, "prog": "/no-ruling-here"}, "an ro path")\n'),
+    ('TM-ro-two', 'bin/team.py',
+     '    return [g for g in ("read", "ro") if seat.get(g)] if seat.get("network") else []\n',
+     '    return [g for g in ("read",) if seat.get(g)] if seat.get("network") else []\n'),
 ]

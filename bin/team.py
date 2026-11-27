@@ -427,6 +427,15 @@ def manifest_classes(prog, adapter):
     return [c for c in tc if c in GRANT_KEYS]
 
 
+def rule_of_two_grants(seat):
+    """The grants of this seat that owe the rule-of-two waiver beside a network
+    grant: a read grant, and the older seat key ro. Either lets a worker read a
+    host path, and a worker that can read a host path and talk to the network can
+    exfiltrate it; where the jail is built the waiver is asked for each
+    (bin/spawn.py, rule_of_two). Empty for a seat that holds no network grant."""
+    return [g for g in ("read", "ro") if seat.get(g)] if seat.get("network") else []
+
+
 def cmd_validate(prog, waivers):
     doc, seats, contract = load(prog)
     rows, stages = contract
@@ -523,9 +532,11 @@ def cmd_validate(prog, waivers):
         if "usd" in b and "budget=advisory" not in waivables:
             waivables.append("budget=advisory")
             notes.append(f"needs-waiver budget=advisory: seat {sname} has a usd cap nothing enforces before R4's broker")
-        if seat.get("read") and seat.get("network"):
+        owes_two = rule_of_two_grants(seat)
+        if owes_two:
             waivables.append("rule-of-two")
-            notes.append(f"needs-waiver rule-of-two: seat {sname} holds read grants and network effects together")
+            notes.append(f"needs-waiver rule-of-two: seat {sname} holds "
+                         f"{' and '.join(owes_two)} grants and network effects together")
         if seat.get("write"):
             reviewed = [r for r in rows if r.get("seat") == sname and r.get("reviewer")]
             unreviewed = [r for r in rows if r.get("seat") == sname and not r.get("reviewer")]
@@ -825,6 +836,20 @@ human = true
                   f'profile = "dev"\nread = ["{ds_x}"]\n')
     rc, out, err = inproc(d, env=with_manifests(*ALL))
     check(rc == 0 and "needs-waiver rule-of-two" in out, f"R rule of two: {out}{err}")
+    # R-ro the older seat key ro beside a network grant owes the same waiver:
+    # the same worker could exfiltrate what it reads. The law is a function of
+    # the seat alone, so the room can hold it (the ro path law itself needs a
+    # host path the room cannot make; the validate-level leg is the host's,
+    # at F1c)
+    for seat, owes, label in [
+        ({"ro": ["/d"], "network": ["pypi.org"]}, ["ro"], "R-ro ro beside network owes the waiver"),
+        ({"read": ["/d"], "network": ["pypi.org"]}, ["read"], "R-ro read beside network still owes it"),
+        ({"ro": ["/d"], "read": ["/d"], "network": ["pypi.org"]}, ["read", "ro"],
+         "R-ro both beside network owe it, both named"),
+        ({"ro": ["/d"]}, [], "R-ro ro alone owes no waiver"),
+        ({"network": ["pypi.org"]}, [], "R-ro network alone owes no waiver"),
+    ]:
+        check(rule_of_two_grants(seat) == owes, f"{label}: {rule_of_two_grants(seat)}")
     shutil.rmtree(ds, ignore_errors=True)
     # F-net the charter bounds a seat's reach: a host outside it refuses by name
     for hosts, why in ((['outside.test'], "outside the charter's reach"), (["*"], "closed")):
@@ -883,6 +908,17 @@ human = true
         d = prog(ok_gpu, roles=("worker.md", "reviewer.md"))
         r = run_(d, env=with_manifests("write"))
         check(r.returncode == 0, f"F1c gpu+ro validate: rc={r.returncode} {r.stderr[:100]}")
+        # R-ro, validate level: ro beside network names the waiver, as read
+        # beside network does (the fix is the same signed waiver)
+        ro_two = BASE.replace('adapter = "claude-code"\n[seat.rev]',
+                              f'adapter = "claude-code"\nro = ["{_ro_legal}"]\nnetwork = ["pypi.org"]\n'
+                              '[seat.rev]', 1)
+        d = prog(ro_two, roles=("worker.md", "reviewer.md"))
+        with open(os.path.join(d, "charter.toml"), "w") as f:
+            f.write('schema = 1\nname = "st"\n\n[reach]\nprofile = "dev"\n')
+        r = run_(d, env=with_manifests(*ALL))
+        check(r.returncode == 0 and "needs-waiver rule-of-two: seat worker holds ro grants" in r.stdout,
+              f"R-ro validate names the waiver for ro beside network: rc={r.returncode} {r.stdout}{r.stderr[:160]}")
         import shutil as _sh1d
         _sh1d.rmtree(_ro_legal, ignore_errors=True)
     # the engine-tree refusal fires where the tree lives off the jail's own

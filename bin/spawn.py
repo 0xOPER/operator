@@ -1442,15 +1442,30 @@ def seat_gpu_binds(meta):
     return [x for n in nodes for x in ("--dev-bind", n, n)]
 
 
+def rule_of_two(attempt, meta, holds):
+    """The rule of two, asked where the jail is built for a seat that holds `holds`
+    beside a network grant (docs/charter.md section 5): a worker that can read a
+    host path and talk to the network can exfiltrate what it reads, so the owner
+    signs that. The newest arm ruling must carry the signed rule-of-two waiver
+    (bin/review.py reads a ruling the same way at its door); a refusal names the
+    fix. The read class and the older seat key ro ask it here, each in its door."""
+    import ruling as ruling_mod
+    arm = ruling_mod.newest(meta["prog"], "arm")
+    if arm is None or "rule-of-two" not in (arm[1].get("waivers") or []):
+        raise Refused(
+            f"seat {meta.get('seat')} holds {holds} beside a network grant: a worker "
+            "that can read a host directory and talk to the network can exfiltrate it, so "
+            "the owner signs that. Re-arm with the waiver (operator ruling sign <dir> "
+            "--kind arm --waive rule-of-two), or drop one of the two grants")
+
+
 def read_binds(attempt, meta):
     """The read class where every worker jail is built (docs/charter.md section 5).
     Nothing in the attempt's meta is taken on trust: each path meets the stricter
     path law again and is a directory on this host (bin/environment.py), and is
     inside the charter's list (bin/reach.py). Beside a network grant the newest arm
-    ruling must carry the signed rule-of-two waiver (bin/review.py reads a ruling
-    the same way at its door): a worker that can read a host directory and talk to
-    the network can exfiltrate it. The binds are read-only, at each path's own
-    place. A refusal names its fix."""
+    ruling must carry the signed rule-of-two waiver (rule_of_two). The binds are
+    read-only, at each path's own place. A refusal names its fix."""
     paths = meta.get("read") or []
     if not paths:
         return []
@@ -1460,7 +1475,6 @@ def read_binds(attempt, meta):
                       "lists what it may read")
     import environment as env_mod
     import reach as reach_mod
-    import ruling as ruling_mod
     for p in paths:
         why = env_mod.read_refusal(p, env_mod.read_roots(prog)) if isinstance(p, str) \
             else f"{p!r} is not a path"
@@ -1473,13 +1487,26 @@ def read_binds(attempt, meta):
     except (reach_mod.Finding, env_mod.Finding) as e:
         raise Refused(f"the seat's read grant isn't inside the charter's directories: {e}")
     if meta.get("network"):
-        arm = ruling_mod.newest(prog, "arm")
-        if arm is None or "rule-of-two" not in (arm[1].get("waivers") or []):
-            raise Refused(
-                f"seat {meta.get('seat')} holds a read grant beside a network grant: a worker "
-                "that can read a host directory and talk to the network can exfiltrate it, so "
-                "the owner signs that. Re-arm with the waiver (operator ruling sign <dir> "
-                "--kind arm --waive rule-of-two), or drop one of the two grants")
+        rule_of_two(attempt, meta, "a read grant")
+    return [x for p in paths for x in ("--ro-bind", p, p)]
+
+
+def ro_binds(attempt, meta):
+    """The seat's ro data paths where every worker jail is built: read-only, at each
+    path's own place, as before. Beside a network grant they are the same
+    exfiltration path a read grant is (the same worker, the same host directory),
+    so the same door asks for the same signed rule-of-two waiver (rule_of_two).
+    ro is not the read class: no charter lists it and its path law stays the
+    author's (bin/team.py); what it binds on its own does not change."""
+    paths = meta.get("ro") or []
+    if not paths:
+        return []
+    if meta.get("network"):
+        if not meta.get("prog"):
+            raise Refused("the seat's ro grant beside a network grant needs the program "
+                          "directory: the owner signs the waiver (operator ruling sign "
+                          "<dir> --kind arm --waive rule-of-two)")
+        rule_of_two(attempt, meta, "an ro path")
     return [x for p in paths for x in ("--ro-bind", p, p)]
 
 
@@ -1495,12 +1522,12 @@ def jail_binds_for(attempt, etc_dir, repo_rw=True):
     for f in ("passwd", "hosts", "machine-id", "hostname"):
         flat += ["--ro-bind", os.path.join(etc_dir, f), f"/etc/{f}"]
     # the seat's own flags reach every jail shape from this one place: the
-    # gpu nodes (or the named refusal), the seat's ro data paths, and its read
-    # directories (the read class, its law held again here)
+    # gpu nodes (or the named refusal), the seat's ro data paths (the rule of
+    # two beside a network grant asked here, as the read class asks it), and
+    # its read directories (the read class, its law held again here)
     meta = meta_load(attempt)
     flat += seat_gpu_binds(meta)
-    for r in meta.get("ro") or []:
-        flat += ["--ro-bind", r, r]
+    flat += ro_binds(attempt, meta)
     flat += read_binds(attempt, meta)
     if meta.get("env"):
         # the seat's environment socket and its client. The socket exists only
@@ -4972,6 +4999,33 @@ def selftest():
         check(r_jail.count(rd_x) == 2 and "REFUSED" not in str(r_jail),
               f"R the signed waiver opens read beside network: {str(r_jail)[:120]}")
         check(read_jail(read=[rd_x]) == r_jail, "R the same waiver leaves a read-only seat as it was")
+
+        # R-ro the older seat key ro: beside a network grant it is the same
+        # exfiltration path (a worker that reads a host path and talks to the
+        # network), so the same door asks for the same signed waiver
+        # (rule_of_two). What ro binds on its own does not change, and it is
+        # still not the read class: no charter and no path law here
+        ro_alone = read_jail(ro=[rd_x])
+        check(ro_alone.count(rd_x) == 2 and "REFUSED" not in str(ro_alone),
+              f"R-ro an ro path binds alone, no ruling asked: {str(ro_alone)[:120]}")
+        with contextlib_redirect():
+            ruling_mod.sign(rd_prog, "arm", None, k)
+        r_jail = read_jail(ro=[rd_x], network=["pypi.org"])
+        check(isinstance(r_jail, str) and r_jail.startswith("REFUSED") and
+              "an ro path" in r_jail and "rule-of-two" in r_jail,
+              f"R-ro ro beside network refuses without the signed waiver: {str(r_jail)[:200]}")
+        r_jail = read_jail(ro=[rd_x], network=["pypi.org"], prog=None)
+        check(isinstance(r_jail, str) and "needs the program directory" in r_jail,
+              f"R-ro ro beside network with no program refuses, the waiver named: {str(r_jail)[:200]}")
+        with contextlib_redirect():
+            ruling_mod.sign(rd_prog, "arm", None, k, waivers=["rule-of-two"])
+        r_jail = read_jail(ro=[rd_x], network=["pypi.org"])
+        check(r_jail.count(rd_x) == 2 and "REFUSED" not in str(r_jail),
+              f"R-ro the signed waiver opens ro beside network: {str(r_jail)[:120]}")
+        check(read_jail(ro=[rd_x]) == ro_alone, "R-ro the waiver leaves an ro-only seat as it was")
+        r_jail = read_jail(ro=[rd_x], read=[rd_x], network=["pypi.org"])
+        check(r_jail.count(rd_x) == 4 and "REFUSED" not in str(r_jail),
+              f"R-ro ro and read beside network: the one waiver covers both: {str(r_jail)[:120]}")
         shutil.rmtree(rd_ds, ignore_errors=True)
 
         print(f"selftest: OK ({ok[0]} checks)" if ok[0] and not bad[0] else "selftest: FAIL")
