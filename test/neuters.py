@@ -1600,6 +1600,12 @@ NEUTERS = [
     ("BK-req-header-name", BK,
      'return bool(HEADER_NAME_RE.fullmatch(k) and HEADER_VALUE_RE.fullmatch(v))',
      'return bool(HEADER_VALUE_RE.fullmatch(v))'),
+    # ...and the target the broker re-originates is clean wire text too: a query byte
+    # above 0x7E used to reach http.client's ASCII encoder, which raised past every
+    # guard -- no status, no row (M1)
+    ("BK-req-target-clean", BK,
+     'if not REQUEST_TARGET_RE.fullmatch(self.path):',
+     'if False:'),
     # --- the sealed check's export: the candidate's exec bit ---
     # it rides at all: without it a script the candidate adds isn't executable (K9a)
     ("CT-exec-bit", CT,

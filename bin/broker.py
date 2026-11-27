@@ -185,6 +185,11 @@ HEADER_VALUE_RE = re.compile(r"[\x20-\x7e\t]*")
 FORWARDED_HEADERS = ("content-type", "retry-after", "retry-after-ms",
                      "x-should-retry", "request-id", "x-request-id")
 FORWARDED_HEADER_PREFIXES = ("anthropic-ratelimit-", "x-ratelimit-", "openai-")
+# ...and so is the target the broker re-originates (the route it matched and the query
+# as the client wrote it): printable ASCII, no space. http.client encodes the request
+# line as ASCII and its UnicodeEncodeError is no HTTPException, so a byte above 0x7E
+# in a query used to kill the handler -- no status, no row.
+REQUEST_TARGET_RE = re.compile(r"[\x21-\x7e]*")
 
 
 def clean_header(k, v):
@@ -210,6 +215,30 @@ def log_row(path, log, **kv):
     with _LOG:
         with open(log, "a", encoding="ascii", errors="replace") as f:
             f.write(json.dumps(row, ensure_ascii=True) + "\n")
+
+
+def rows_of(logf):
+    """The rows the broker has written to a log, a half-written last line aside."""
+    rows = []
+    for ln in open(logf).read().splitlines():
+        try:
+            rows.append(json.loads(ln))
+        except ValueError:
+            pass
+    return rows
+
+
+def rows_after(logf, n, wait=3.0):
+    """The rows that landed after the n-th, as soon as they exist. A handler writes
+    its row just after the client's last byte, so an arm that reads the ledger the
+    moment a response arrives races it: this returns on the row, and waits the whole
+    `wait` only for an arm that never gets one, which is failing anyway."""
+    deadline = time.monotonic() + wait
+    while True:
+        rows = rows_of(logf)
+        if len(rows) > n or time.monotonic() >= deadline:
+            return rows[n:]
+        time.sleep(0.005)
 
 
 class UnixHTTPServer(ThreadingHTTPServer):
@@ -298,6 +327,12 @@ class Handler(BaseHTTPRequestHandler):
         except OSError:
             self._refuse(408, "client body timed out")
             log_row(path, self.server.log, status=408)
+            return
+        # the target the origin will be asked for is clean wire text (checked once the
+        # body is read, so the connection stays in step)
+        if not REQUEST_TARGET_RE.fullmatch(self.path):
+            self._refuse(400, "the broker carries a clean target only")
+            log_row(path, self.server.log, status=400)
             return
         self.connection.settimeout(IDLE)
         seat_ok, client_seat, client_attempt = _verify_client_token(
@@ -1340,10 +1375,13 @@ def selftest():
                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         p_rawbr.stdout.readline()
 
+        raw_turns = [0]   # every raw turn writes one row, once its handler is done
+
         def raw_turn(target, extra=b"", wait=2.0):
             """One raw request over the broker's socket: the bytes back, and whether
             the broker ended the connection. The read stops at the frame the head
             announces, so a kept-alive connection costs no wait."""
+            raw_turns[0] += 1
             s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             s.settimeout(wait)
             s.connect(sock_raw)
@@ -1368,6 +1406,13 @@ def selftest():
                 pass
             s.close()
             return out, closed
+
+        def raw_turn_logged(target, extra=b""):
+            """A raw turn with the rows it wrote, and no other: the rows of every turn
+            before it land first, and so does its own."""
+            rows_after(log_raw, raw_turns[0] - 1)
+            out, closed = raw_turn(target, extra)
+            return out, closed, rows_after(log_raw, raw_turns[0] - 1)
 
         def halves(out):
             """The response's header lines (the request line first), lowercased and
@@ -1491,6 +1536,13 @@ def selftest():
                       if p == "/v1/messages?l=name"]
         check(not any("x-r(1)" in h.lower() for h in seen_n),
               f"L4 the origin never saw the name: {seen_n}")
+        # M the law holds for the target too: a query byte above 0x7E used to reach
+        # http.client's ASCII encoder, whose error is no HTTPException -- the handler
+        # died, the client learned no status and the ledger kept no row
+        out_m, _, rows_m = raw_turn_logged(b"/v1/messages?l=clean&x=\xe9")
+        check(out_m.startswith(b"HTTP/1.1 400 ") and len(rows_m) == 1
+              and rows_m[0].get("status") == 400,
+              f"M1 a target that is not clean wire text refuses 400 and leaves its row: {out_m[:60]!r} {rows_m}")
         p_rawbr.terminate()
         p_raw.terminate()
         p_rawbr.wait(timeout=10)
