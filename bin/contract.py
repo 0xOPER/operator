@@ -911,6 +911,22 @@ def _apply_candidate_diff(repo, pin, commit, export, allowed_writes, resolved_or
                 os.chmod(dst, 0o700)
 
 
+def _body_of(p):
+    with open(p) as f:
+        return f.read()
+
+
+def _copy_transplanted(src, dst, is_tree):
+    """A candidate's transplanted tests land in the export as they are: a symlink is
+    copied as the link, never followed. copytree with symlinks=False follows one on the
+    host, outside any jail, and copies whatever it names into the export the check jail
+    is handed -- a file, or a whole directory."""
+    if is_tree:
+        shutil.copytree(src, dst, symlinks=True)
+    else:
+        shutil.copy2(src, dst)
+
+
 _RESERVED_GUARD_ENV = frozenset({
     "LD_PRELOAD", "LD_LIBRARY_PATH", "PYTHONINSPECT", "PYTHONSTARTUP",
     "PYTHONHOME", "HOME", "PATH", "PROG",
@@ -1114,10 +1130,7 @@ def run_check(row, prog, repo, commit, arm, results, prog_key, record_log=True, 
                     shutil.rmtree(dst_tp, ignore_errors=True)
                 elif os.path.lexists(dst_tp):
                     os.unlink(dst_tp)
-                if tp_typ == "tree":
-                    shutil.copytree(src_tp, dst_tp, symlinks=False)
-                else:
-                    shutil.copy2(src_tp, dst_tp)
+                _copy_transplanted(src_tp, dst_tp, tp_typ == "tree")
         for o_path, o_typ in resolved_oracles:
             arch = subprocess.Popen(["git", "-C", repo, "archive", pin, "--", o_path],
                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
@@ -2807,6 +2820,37 @@ deps = ["tests.frozen"]
               f"K9b a touched candidate file with no exec bit gains none: {m_keep:o}")
     finally:
         shutil.rmtree(tmp9, ignore_errors=True)
+
+    # K10 a symlink the candidate plants under its transplanted tests lands as the link,
+    # never as what it names: copytree used to follow it on the host, and a file or a
+    # whole directory the engine's user can read was copied into the jail's export
+    tmp10 = tempfile.mkdtemp(prefix="transplant.")
+    try:
+        host10, else10 = os.path.join(tmp10, "host-only"), os.path.join(tmp10, "elsewhere")
+        os.makedirs(else10)
+        with open(host10, "w") as f:
+            f.write("HOST-ONLY\n")
+        with open(os.path.join(else10, "inner.txt"), "w") as f:
+            f.write("INNER\n")
+        src10, dst10 = os.path.join(tmp10, "tests"), os.path.join(tmp10, "x", "tests")
+        os.makedirs(os.path.join(src10, "sub"))
+        os.makedirs(os.path.dirname(dst10))
+        with open(os.path.join(src10, "test_new.py"), "w") as f:
+            f.write("x = 1\n")
+        os.symlink(host10, os.path.join(src10, "leak"))
+        os.symlink(else10, os.path.join(src10, "sub", "up"))
+        _copy_transplanted(src10, dst10, True)
+        foreign10 = [p for root_d, _, files in os.walk(dst10)
+                     for p in (os.path.join(root_d, fn) for fn in files)
+                     if not os.path.islink(p) and _body_of(p).strip() in ("HOST-ONLY", "INNER")]
+        check(os.path.islink(os.path.join(dst10, "leak"))
+              and os.path.islink(os.path.join(dst10, "sub", "up")) and not foreign10,
+              f"K10 a symlink under the transplanted tests lands as the link, never as what it names: {foreign10}")
+        _copy_transplanted(os.path.join(src10, "test_new.py"), os.path.join(tmp10, "x", "one.py"), False)
+        check(_body_of(os.path.join(tmp10, "x", "one.py")) == "x = 1\n",
+              "K10b a transplanted test file lands whole")
+    finally:
+        shutil.rmtree(tmp10, ignore_errors=True)
 
     print(f"selftest: OK ({ok[0]} checks)" if ok[0] and not bad[0] else "selftest: FAIL")
     return 0 if ok[0] and not bad[0] else 1

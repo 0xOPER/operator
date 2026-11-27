@@ -1652,6 +1652,11 @@ NEUTERS = [
     ("BK-resp-coded-identity", BK,
      'return any(tok.strip().lower() not in ("", "identity") for tok in codings)',
      'return any(tok.strip().lower() not in ("",) for tok in codings)'),
+    # a symlink under the candidate's transplanted tests lands as the link: followed,
+    # it copied whatever it named into the jail's export, on the host (K10)
+    ("CT-transplant-symlink", CT,
+     'shutil.copytree(src, dst, symlinks=True)',
+     'shutil.copytree(src, dst, symlinks=False)'),
     # --- the sealed check's export: the candidate's exec bit ---
     # it rides at all: without it a script the candidate adds isn't executable (K9a)
     ("CT-exec-bit", CT,
