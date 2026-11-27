@@ -1657,6 +1657,10 @@ NEUTERS = [
     ("CT-transplant-symlink", CT,
      'shutil.copytree(src, dst, symlinks=True)',
      'shutil.copytree(src, dst, symlinks=False)'),
+    # ...and an executable among the transplanted tests rides for the owner alone too (K10c, K10d)
+    ("CT-exec-transplant", CT,
+     'os.chmod(landed_p, 0o700)',
+     'pass'),
     # --- the sealed check's export: the candidate's exec bit ---
     # it rides at all: without it a script the candidate adds isn't executable (K9a)
     ("CT-exec-bit", CT,

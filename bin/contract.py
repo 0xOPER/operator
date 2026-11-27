@@ -925,6 +925,13 @@ def _copy_transplanted(src, dst, is_tree):
         shutil.copytree(src, dst, symlinks=True)
     else:
         shutil.copy2(src, dst)
+    # ...and an executable among them rides for the owner alone, as it does when the
+    # candidate diff lands one (git's archive gives it 0777, less the umask)
+    landed = [os.path.join(root_d, fn) for root_d, _, fns in os.walk(dst) for fn in fns] \
+        if is_tree else [dst]
+    for landed_p in landed:
+        if not os.path.islink(landed_p) and os.lstat(landed_p).st_mode & 0o111:
+            os.chmod(landed_p, 0o700)
 
 
 _RESERVED_GUARD_ENV = frozenset({
@@ -2849,6 +2856,22 @@ deps = ["tests.frozen"]
         _copy_transplanted(os.path.join(src10, "test_new.py"), os.path.join(tmp10, "x", "one.py"), False)
         check(_body_of(os.path.join(tmp10, "x", "one.py")) == "x = 1\n",
               "K10b a transplanted test file lands whole")
+        # K10c ...and an executable among them rides for the owner alone, as it does
+        # when the candidate diff lands one (K9a)
+        src11, dst11 = os.path.join(tmp10, "t11"), os.path.join(tmp10, "x11")
+        os.makedirs(src11)
+        for nm11, txt11 in (("run.sh", "#!/bin/sh\nexit 0\n"), ("test_ok.py", "y = 2\n")):
+            with open(os.path.join(src11, nm11), "w") as f:
+                f.write(txt11)
+        os.chmod(os.path.join(src11, "run.sh"), 0o755)
+        _copy_transplanted(src11, dst11, True)
+        m_run = os.lstat(os.path.join(dst11, "run.sh")).st_mode & 0o777
+        m_py = os.lstat(os.path.join(dst11, "test_ok.py")).st_mode & 0o777
+        check(m_run == 0o700 and m_py & 0o111 == 0,
+              f"K10c a transplanted executable rides for the owner alone: {m_run:o} {m_py:o}")
+        _copy_transplanted(os.path.join(src11, "run.sh"), os.path.join(tmp10, "one.sh"), False)
+        check(os.lstat(os.path.join(tmp10, "one.sh")).st_mode & 0o777 == 0o700,
+              "K10d a transplanted executable file rides for the owner alone")
     finally:
         shutil.rmtree(tmp10, ignore_errors=True)
 
