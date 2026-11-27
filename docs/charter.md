@@ -185,9 +185,14 @@ charter and refused outside it; the jail gets the proxy as its only door, with
 one log row per connection; `network` is in the `tested_classes` of
 `claude-code`, `codex` and `opencode`, each with a `net-allowed` conformance
 cell; a credential shape riding a request head is refused and logged (the
-`net-allowed` cell proves it in a real jail). Open: the `declared` rule and
-the `net.allow` verb (they come with the manager), `shell` and `read`, and the
-writable clone. Not buildable as the plan first wrote it: "egress bodies" —
+`net-allowed` cell proves it in a real jail). `shell` is in the same three
+adapters' `tested_classes`: commands run inside the jail and the jail is the
+law, because no shipped adapter keeps a per-command law (`claude-code` admits
+the commands its own sandbox deems safe; the other two have no permission
+layer at their pins), so the prefix scoping the plan imagined waits for an
+adapter that can. Open: the `declared` rule and the `net.allow` verb (they
+come with the manager), `read`, and the writable clone. Not buildable as the
+plan first wrote it: "egress bodies" —
 an HTTPS tunnel's body is encrypted, and the broker's request bodies are the
 worker's own prompts, where key-shaped strings are often honest fixtures.
 
@@ -436,7 +441,7 @@ each row by delegation.
 |---|---|---|---|
 | M0 | Charter law | the signed plan | this document |
 | M1 | Environments | container and GPU work | built: the charter, the door, `env` rows, the worker socket. The exit is the parked program's two rows closing as machine rows |
-| M2 | Reach | network, shell, read | first slice built: a seat's network from the charter, through the egress proxy. Open: the `declared` rule, `net.allow`, the credential refusal, `shell` and `read` |
+| M2 | Reach | network, shell, read | built: a seat's network from the charter, through the egress proxy; a credential shape refused on the wire; `shell` on the three adapters, the jail the law. Open: the `declared` rule, `net.allow` (with the manager), and `read` |
 | M3 | Evidence | contract authoring as a precondition | first slice built: `operator derive`. Open: the hollow twin and the `reviewed-only` label, the lint against existence-class anchors, `min_mutation_kill`, the evidence mix, the templates |
 | M4 | The manager | triage seat becomes executive | open |
 | M5 | Enclose | external orchestrators as workers or managers | open, gated on probes |

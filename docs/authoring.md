@@ -58,10 +58,10 @@ working examples (copy them via `bin/operator.sh init` rather than editing
 `ruling sign` to refuse).
 
 > **Enforceability & inert keys:** `claude-code`, `codex` and `opencode` declare
-> `tested_classes = ["write", "network"]`, each with a green `net-allowed`
-> conformance cell; the others declare `write` only. A grant outside its
-> adapter's tested range is **refused** by `bin/team.py`. `read`, `shell`, and
-> seat `mcp` grants are **refused** for every adapter. `memory`, `skills`, and
+> `tested_classes = ["write", "network", "shell"]`, each with green
+> `net-allowed` and `shell-allowed` conformance cells; the others declare
+> `write` only. A grant outside its adapter's tested range is **refused** by
+> `bin/team.py`. `read` and seat `mcp` grants are **refused** for every adapter. `memory`, `skills`, and
 > `mcp` declarations are currently **inert** (accepted with a note, not yet
 > wired to enforcement).
 
@@ -286,6 +286,16 @@ files nothing.
 
 A derived row is a starting point. One that needs what the jail does not have
 (an installed tree, a toolchain) is red at the pin and says so.
+
+### The seat's shell (`shell`)
+
+`shell = ["*"]` lets a seat run shell commands. On every shipped adapter the
+law is the jail, not a per-command rule: `codex` and `opencode` have no
+permission layer at their pins, and `claude-code` admits the commands its own
+sandbox deems safe without asking. So a command's in-tree effect lands, and
+its out-of-tree effect (a write outside the repository, a host path, the
+network) is refused by the jail and the proxy. No shipped adapter enforces
+command prefixes; the grammar accepts them, for an adapter that can.
 
 ### Templates and state
 

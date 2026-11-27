@@ -633,7 +633,7 @@ def build_attempt(rd, seat, grants, ref, aid, task, prog, seats):
     # walk's row -- visibility rode the write grant, so naming a tree visible
     # (a .github with a hundred files) meant widening DELIVERY. `see` names
     # paths for the checkout only; the tree check still gates on the grants.
-    see, gpu, ro, env, network = [], False, [], [], []
+    see, gpu, ro, env, network, shell = [], False, [], [], [], []
     if prog:
         try:
             _, seats_doc, _ = load_team(prog)
@@ -645,6 +645,7 @@ def build_attempt(rd, seat, grants, ref, aid, task, prog, seats):
         ro = [os.path.realpath(p) for p in (seat_doc.get("ro") or [])]
         env = list(seat_doc.get("env") or [])
         network = list(seat_doc.get("network") or [])
+        shell = list(seat_doc.get("shell") or [])
     visible = grants + see
     stage_info = os.path.join(stage_repo, ".git", "info")
     os.makedirs(stage_info, exist_ok=True)
@@ -670,7 +671,7 @@ def build_attempt(rd, seat, grants, ref, aid, task, prog, seats):
     meta = {"id": aid, "seat": seat, "grants": grants, "see": see, "ref": ref,
             "start": start_sha, "task": task, "prog": prog,
             "seats": [x for x in (seats or []) if x],
-            "gpu": gpu, "ro": ro, "env": env, "network": network,
+            "gpu": gpu, "ro": ro, "env": env, "network": network, "shell": shell,
             "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     # a queued reply rides this attempt's mail, once: the pending note is
     # consumed here so a second reply re-pends instead of stacking silently
@@ -1842,7 +1843,13 @@ def adapter_prepare(attempt, manifest, broker):
                           # read headless instead of judging (0 tool calls)
                           + ["Read(/w/compiled/pack.md)",
                              "Read(compiled/pack.md)",
-                             "Read(//w/compiled/pack.md)"],
+                             "Read(//w/compiled/pack.md)"]
+                          # A seat's shell grant is NOT compiled to a Bash rule:
+                          # the CLI admits the commands its own sandbox deems
+                          # safe without asking (measured), so a prefix rule
+                          # would promise a law it does not keep. The engine's
+                          # jail is what bounds a seat's commands, on every
+                          # adapter; test/conformance.sh shell-allowed proves it
             },
             "hooks": {
                 "PreToolUse": [{"matcher": "*", "hooks": [{
@@ -3834,6 +3841,29 @@ def selftest():
             _, binds_cc = adapter_argv(aw8, m_cc, BROKER)
             check("audit-hook.py" in " ".join(binds_cc),
                   "H3 the hook's source binds ro under /engine")
+            # S-shell a seat's shell grant rides the attempt's meta, and is
+            # NOT compiled to a Bash rule: the CLI admits sandbox-safe commands
+            # without asking, so the engine's jail is the law (the cell proves it)
+            def shell_attempt(team_extra, n):
+                prog_sh = _program(home, f"p-shell-{n}", team_body='schema = 1\nname = "t"\nmax_parallel = 1\n'
+                                   '[seat.w]\nrole = "roles/w.md"\nadapter = "claude-code"\n'
+                                   'write = ["src/**"]\n' + team_extra)
+                rd_sh, _, _ = _world(home, f"w-shell-{n}", {"src/a.py": "v=1\n"})
+                return build_attempt(rd_sh, "w", ["src/**"], "integration/R", "sh-1", "r1", prog_sh, ["w"])
+            adir_sh = shell_attempt('shell = ["echo", "git diff"]\n', 1)
+            try:
+                check(meta_load(adir_sh).get("shell") == ["echo", "git diff"],
+                      "S-shell the seat's shell grant rides the attempt's meta")
+                with contextlib_redirect():
+                    adapter_prepare(adir_sh, adapter_manifest("claude-code"), BROKER)
+                allow_sh = json.load(open(os.path.join(adir_sh, "compiled", "adapter-settings.json")))["permissions"]["allow"]
+                check(not any(a.startswith("Bash") for a in allow_sh),
+                      f"S-shell no Bash rule promises a prefix law the CLI does not keep: {allow_sh[-3:]}")
+            finally:
+                shutil.rmtree(adir_sh, ignore_errors=True)
+            adir_sh = shell_attempt("", 2)
+            check(meta_load(adir_sh).get("shell") == [], "S-shell no grant, nothing rides")
+            shutil.rmtree(adir_sh, ignore_errors=True)
             # C1(b)/(e): the fence hook rides PostToolUse, its source binds,
             # and the manifest states hooked -- while a hooked claim without
             # the planting (or a misspelled value) refuses

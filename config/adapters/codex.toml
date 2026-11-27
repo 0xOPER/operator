@@ -5,7 +5,7 @@ schema = 2
 name = "codex"
 version_tested = "0.166.0"
 default_model = "gpt-5-codex"
-tested_classes = ["write", "network"]
+tested_classes = ["write", "network", "shell"]
 # C1(e): codex has no hook system at the pin -- unfenced, stated; the jail,
 # the seal and the brief's DATA LAW are the controls that hold
 tool_fencing = "unfenced"

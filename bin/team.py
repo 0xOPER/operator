@@ -23,6 +23,7 @@ usage: team.py validate <program-dir> [--waive <name>]...
 env: CONTRACT_REPO (for the base-tree checks; skipped with a note when unset)
 exit: 0 holds, 1 a finding, 2 usage or VOID
 """
+import json
 import os
 import re
 import subprocess
@@ -342,6 +343,14 @@ def check_grant(sname, kind, value):
             if not GLOB_RE.fullmatch(v) or v.startswith("/") or v.endswith("/") \
                     or ".." in v.split("/"):
                 raise Finding(f"seat {sname}: {kind} {v!r} must be a repo-relative path glob")
+        elif kind == "shell":
+            # a command prefix compiles to a `Bash(prefix:*)` rule on the CLIs
+            # that have a permission layer: words, never shell syntax. A
+            # trailing ` *` names the tool with any arguments, as the bare
+            # prefix already does
+            if v != "*" and not re.fullmatch(r"[A-Za-z0-9_./-][A-Za-z0-9_./ -]{0,63}( \*)?", v):
+                raise Finding(f"seat {sname}: shell {v!r} must be a command prefix "
+                              "(words, no shell syntax) or *")
 
 
 def load_contract(prog, name):
@@ -645,17 +654,18 @@ human = true
 
     # E enforceability: no manifest, no grants; a manifest opens only its
     # tested classes. C8 ships real manifests, so the no-manifest arms use an
-    # adapter nothing ships, and the claude-code arms now measure against the
-    # CORE's own manifest (P's tested range: write only).
+    # adapter nothing ships, and the claude-code arms measure against the
+    # CORE's own manifest: `read` is the class no shipped adapter claims
+    # (`network` and `shell` are claimed where their conformance cells are green).
     grants = BASE.replace('adapter = "claude-code"\n[seat.rev]',
-                          'adapter = "claude-code"\nshell = ["git diff"]\n[seat.rev]', 1)
+                          'adapter = "claude-code"\nread = ["docs"]\n[seat.rev]', 1)
     d = prog(grants, roles=("worker.md", "reviewer.md"))
     r = run_(d)
     check(r.returncode == 1 and "tested range" in r.stderr,
           f"E the core manifest gates: {r.stderr}")
     d = prog(grants, roles=("worker.md", "reviewer.md"))
-    r = run_(d, env=with_manifests("shell"))
-    check(r.returncode == 0, f"E manifest opens shell: {r.stdout}{r.stderr}")
+    r = run_(d, env=with_manifests("read"))
+    check(r.returncode == 0, f"E manifest opens read: {r.stdout}{r.stderr}")
     none = grants.replace('adapter = "claude-code"', 'adapter = "nothing-ships-this"', 1)
     d = prog(none, roles=("worker.md", "reviewer.md"))
     r = run_(d)
@@ -663,7 +673,7 @@ human = true
     net = BASE.replace('adapter = "claude-code"\n[seat.rev]',
                        'adapter = "claude-code"\nnetwork = ["pypi.org"]\n[seat.rev]', 1)
     d = prog(net, roles=("worker.md", "reviewer.md"))
-    r = run_(d, env=with_manifests("shell"))
+    r = run_(d, env=with_manifests("read"))
     check(r.returncode == 1 and "tested range" in r.stderr, f"E untested class: {r.stderr}")
     # the core's real manifest is present and opens exactly what P tested (including BYO model)
     byo = BASE.replace('adapter = "claude-code"\n[seat.rev]',
@@ -682,7 +692,7 @@ human = true
     d2 = prog(grants, roles=("worker.md", "reviewer.md"))
     os.makedirs(os.path.join(d2, "adapters"))
     with open(os.path.join(d2, "adapters", "claude-code.toml"), "w") as f:
-        f.write('tested_classes = ["shell", "write", "network"]\n')
+        f.write('tested_classes = ["shell", "write", "network", "read"]\n')
     r = run_(d2)
     check(r.returncode == 1 and "tested range" in r.stderr, f"E self-certification: {r.stderr}")
     # F waivables print as needs, never refuse at validate
@@ -726,6 +736,14 @@ human = true
         f.write('schema = 1\nname = "st"\n[reach]\nprofile = "dev"\n')
     r = run_(d, env=with_manifests(*ALL))
     check(r.returncode == 0, f"F-net `*` under an open profile validates: {r.stdout}{r.stderr}")
+    # F-shell a shell grant is a command prefix or `*`: words, never shell syntax
+    for raw in ("echo; rm -rf /", "cat x | sh", "a`id`", "$(id)", "a > b"):
+        shx = BASE.replace('adapter = "claude-code"\n[seat.rev]',
+                           f'adapter = "claude-code"\nshell = [{json.dumps(raw)}]\n[seat.rev]', 1)
+        d = prog(shx, roles=("worker.md", "reviewer.md"))
+        r = run_(d, env=with_manifests(*ALL))
+        check(r.returncode == 1 and "must be a command prefix" in r.stderr,
+              f"F-shell shell syntax in a prefix refuses ({raw!r}): {r.stderr[:120]}")
     # F1b `see` is shape-checked as visibility naming: good passes with NO
     # demand on the adapter's tested classes, a bad shape refuses
     ok_see = BASE.replace('adapter = "claude-code"\n[seat.rev]',

@@ -1857,4 +1857,11 @@ NEUTERS = [
      '                                                           "derive", record_log=False)',
      '                                                           "derive", record_log=True)',
      'bin/derive.py --first-level'),
+
+    ("SP-shell-meta", 'bin/spawn.py',
+     '        shell = list(seat_doc.get("shell") or [])',
+     '        shell = []'),
+    ("TM-shell-shape", 'bin/team.py',
+     '            if v != "*" and not re.fullmatch(r"[A-Za-z0-9_./-][A-Za-z0-9_./ -]{0,63}( \\*)?", v):',
+     '            if False and not re.fullmatch(r"[A-Za-z0-9_./-][A-Za-z0-9_./ -]{0,63}( \\*)?", v):'),
 ]
