@@ -3,18 +3,20 @@
 # engine never runs git inside an attempt after the worker starts. A worker
 # whose .git is writable (a writable clone, when a grant asks for one) could
 # plant hooks and config-driven commands. This walk plants them where the
-# worker would have: in the attempt's .git, after a real turn. Two legs then
-# run the engine on that attempt, and nothing may fire on the host: the real
-# delivery chain (seal, gate, collect, candidate), and the engine's own verb on
-# the already-turned attempt (spawn.py adapter, a re-drive: the verb whose
-# adapter_prepare used to ask the attempt's repository, on the host, whether
-# the adapter's config file is tracked). A positive control proves the
-# detection is live: git run in that repository ON THE HOST does fire the
-# plants, each one a leg could have fired.
+# worker would have: in the attempt's .git, after a real turn. Three legs then
+# run the engine, and nothing may fire on the host: the real delivery chain
+# (seal, gate, collect, candidate); the engine's own verb on the already-turned
+# attempt (spawn.py adapter, a re-drive: the verb whose adapter_prepare used to
+# ask the attempt's repository, on the host, whether the adapter's config file
+# is tracked); and the writable clone (a seat that asks with shell, on an
+# adapter that earned the class), where the plants are written by the worker's
+# own turn FROM INSIDE THE JAIL. A positive control proves the detection is
+# live: git run in each repository ON THE HOST does fire the plants.
 #
 # --sabotage proves the walk can fail, once per leg: against a copy of the
-# engine whose collector runs git inside the attempt on the host, and against
-# one whose adapter_prepare does, the same walk reports it.
+# engine whose collector runs git inside the attempt on the host, against one
+# whose adapter_prepare does, and against one whose seal does for a clone, the
+# same walk reports it.
 #
 # usage: planted-hook-walk.sh            (on-host: bwrap, git; first-level)
 #        planted-hook-walk.sh --selftest
@@ -48,6 +50,7 @@ selftest() {
   # A the plants are live where git runs in that repository: a hook and the
   # config-driven commands both leave their trace
   fixture "$T/a" || die "no git fixture"
+  mkdir -p "$T/m"
   sh "$PLANT" "$T/a" "$T/m" || die "the plants didn't take"
   fire_control "$T/a"
   grep -q "post-index-change" "$T/m/HOOK-RAN" 2>/dev/null || { echo "A a planted hook fired: no trace"; rc=1; }
@@ -58,6 +61,14 @@ selftest() {
   mkdir -p "$T/m2"
   fire_control "$T/b"
   if [ -e "$T/m2/HOOK-RAN" ] || [ -e "$T/m2/CFG-RAN" ]; then echo "B a clean repository left a trace"; rc=1; fi
+  # C the plant script runs where the marker directory cannot be made (a jail):
+  # it plants, and nothing fires
+  fixture "$T/c" || die "no git fixture"
+  sh "$PLANT" "$T/c" "$T/no-such-dir/markers" || { echo "C the plants didn't take without a marker directory"; rc=1; }
+  if ! grep -q "fsmonitor" "$T/c/.git/config" 2>/dev/null || [ ! -x "$T/c/.githooks/post-commit" ]; then
+    echo "C the plants are not in the repository"; rc=1
+  fi
+  [ ! -e "$T/no-such-dir/markers/HOOK-RAN" ] || { echo "C a plant fired"; rc=1; }
   if [ $rc = 0 ]; then echo "selftest: OK (the plants fire where git runs, and only there)"; else echo "selftest: FAIL"; fi
   exit $rc
 }
@@ -67,7 +78,7 @@ sabotage() {
   # git call inside the attempt back into a copy of the engine -- exactly the
   # regression its leg stands for
   local name S rc_all=0 rc
-  for name in collect reprepare; do
+  for name in collect reprepare sealclone; do
     S=$(mktemp -d "${TMPDIR:-/tmp}/phw-sab.XXXX") || die "no scratch"
     [ -n "${PHW_KEEP:-}" ] || trap 'rm -rf "${S:?}"' EXIT
     mkdir -p "$S/engine"
@@ -79,11 +90,18 @@ if sys.argv[2] == "collect":
     old = "def collect(attempt):\n"
     new = old + ("    import subprocess as _s  # SABOTAGE: git inside the attempt, on the host\n"
                  "    _s.run([\"git\", \"-C\", os.path.join(attempt, \"repo\"), \"status\", \"--short\"], capture_output=True)\n")
-else:
+elif sys.argv[2] == "reprepare":
     old = "    body = manifest.get(\"repo_config_body\")\n"
     new = old + ("    import subprocess as _s  # SABOTAGE: git inside the attempt, on the host\n"
                  "    _s.run([\"git\", \"-C\", os.path.join(attempt, \"repo\"), \"ls-files\", \"--\", \"opencode.json\"],\n"
                  "           capture_output=True, env=engine_env())\n")
+else:
+    old = "    seal_dir = os.path.join(attempt, \"seal\")\n"
+    new = ("    import subprocess as _s  # SABOTAGE: git inside a clone's attempt, on the host\n"
+           "    if meta.get(\"shell\"):\n"
+           "        _s.run([\"git\", \"-C\", os.path.join(attempt, \"repo\"), \"status\", \"--short\"],\n"
+           "               capture_output=True, env=engine_env())\n"
+           + old)
 assert t.count(old) == 1, f"the walk's sabotage anchor moved: {old!r}"
 p.write_text(t.replace(old, new))
 PY
@@ -182,9 +200,59 @@ for m in HOOK-RAN CFG-RAN; do
 done
 echo "  re-drive: the engine's own verb on the turned attempt -- no hook and no config command ran on the host"
 
-# --- 5 the control: the same plants DO fire where git runs in that repository on the host
+# --- 4c the writable clone: a seat that asks with shell, on an adapter whose
+# manifest proves the class, writes its .git from inside the jail. The turn
+# makes a branch and a worktree of its own and a side branch, THEN plants the
+# zoo (a planted reference-transaction hook that cannot write its marker would
+# abort the worker's own ref updates there). The real chain runs on that
+# attempt, and nothing may fire on the host; .git is never delivered
+printf 'schema = 1\nname = "phw"\nmax_parallel = 1\n[seat.w]\nrole = "roles/w.md"\nwrite = ["src/**"]\nadapter = "stub"\nshell = ["*"]\n[seat.w.budget]\nusd = 1.0\n' > "$PROG/team.toml"
+mkdir -p "$D/cl-adapters"
+sed 's/^tested_classes = .*/tested_classes = ["write", "shell"]/' "$ENGINE/config/adapters/stub.toml" > "$D/cl-adapters/stub.toml"
+ADIR2=$(spawn attempt "$RD" --id phw-clone --seat w --grants "src/**" --task r1 --prog "$PROG") || die "the clone attempt refused to build"
+TURN2=$(cat <<'TURN'
+set -eu
+git checkout -q -b feature/walk && echo BRANCH-OK
+git worktree add -q -b walk-wt "$HOME/wt" && [ -f "$HOME/wt/.git" ] && echo WORKTREE-OK
+echo side > "$HOME/side.txt"
+b=$(git hash-object -w "$HOME/side.txt")
+t=$(printf '100644 blob %s\tside-only.txt\n' "$b" | git mktree)
+c=$(git -c user.email=a@x -c user.name=a commit-tree "$t" -m side)
+git update-ref refs/heads/side "$c" && echo "$c" > src/side-sha.txt
+echo clone-ok > src/clone-ok.txt
+TURN
+)
+OPERATOR_ADAPTERS="$D/cl-adapters" timeout -k 10 150 python3 "$ENGINE/bin/spawn.py" worker "$ADIR2" --timeout 120 -- \
+  /bin/sh -c "$TURN2
+$(cat "$PLANT")" sh . "$D/host" > "$D/turn2.out" 2>&1
+if ! grep -q "BRANCH-OK" "$ADIR2/transcript.out" 2>/dev/null || ! grep -q "WORKTREE-OK" "$ADIR2/transcript.out" 2>/dev/null; then
+  fail "the clone turn could not branch or add a worktree: the jail gave no writable .git ($(tail -n 2 "$D/turn2.out" | tr '\n' '|'))"
+fi
+grep -q "fsmonitor" "$ADIR2/repo/.git/config" 2>/dev/null || fail "the clone turn planted nothing in .git from the jail: the leg proves nothing"
+grep -q "^rc=0" "$D/turn2.out" || fail "the clone turn did not end clean: $(tail -n 1 "$D/turn2.out")"
+spawn seal "$ADIR2" > "$D/seal2.out" 2>&1
+[ "$(tail -n 1 "$D/seal2.out")" = sealed ] || fail "the clone's seal did not seal: $(tail -n 1 "$D/seal2.out")"
+spawn gate "$ADIR2" > "$D/gate2.out" 2>&1
+[ "$(tail -n 1 "$D/gate2.out")" = OK ] || fail "the clone's gate did not pass: $(tail -n 1 "$D/gate2.out")"
+spawn candidate "$ADIR2" --task r1 > "$D/candidate2.out" 2>&1
+[ "$(tail -n 1 "$D/candidate2.out")" = candidate ] || fail "the clone's candidate did not build: $(tail -n 1 "$D/candidate2.out")"
+[ "$(git -C "$RD/parent" show refs/heads/candidate/r1:src/clone-ok.txt 2>/dev/null)" = clone-ok ] || fail "the clone's work is not the candidate"
+if git -C "$RD/parent" ls-tree -r --name-only refs/attempts/phw-clone | grep -q '^\.git/'; then fail "the clone's .git was delivered"; fi
+SIDE=$(cat "$ADIR2/repo/src/side-sha.txt" 2>/dev/null)
+printf %s "$SIDE" | grep -qE '^[0-9a-f]{40}$' || fail "the clone turn recorded no side branch"
+if git -C "$RD/parent" cat-file -e "${SIDE}^{commit}" 2>/dev/null; then fail "the parent learned the clone's side branch"; fi
+for m in HOOK-RAN CFG-RAN; do
+  [ -e "$D/host/$m" ] && fail "a planted $m, written by the worker in its clone, ran host-side through the chain: $(sort -u "$D/host/$m" | tr '\n' ' ')"
+done
+echo "  clone: a worker turn wrote its .git from the jail -- the chain delivered the work tree; no hook and no config command ran on the host; .git was not delivered"
+
+# --- 5 the control: the same plants DO fire where git runs in those repositories on the host
 fire_control "$ADIR/repo"
 if [ ! -s "$D/host/HOOK-RAN" ] || [ ! -s "$D/host/CFG-RAN" ]; then fail "the control did not fire: the walk proves nothing"; fi
 grep -q "fsmonitor" "$D/host/CFG-RAN" || fail "the control never fired the fsmonitor: the re-drive leg proves nothing"
-echo "  control: git run in that repository on the host fires the plants (the detection is live)"
-echo "planted-hook-walk: OK (neither the chain nor the engine's own verb runs git in the attempt; the plants are live)"
+rm -f -- "$D/host/HOOK-RAN" "$D/host/CFG-RAN"
+fire_control "$ADIR2/repo"
+if [ ! -s "$D/host/HOOK-RAN" ] || [ ! -s "$D/host/CFG-RAN" ]; then fail "the control did not fire on the clone: the clone leg proves nothing"; fi
+grep -q "fsmonitor" "$D/host/CFG-RAN" || fail "the control never fired the clone's fsmonitor: the clone leg proves nothing"
+echo "  control: git run in those repositories on the host fires the plants (the detection is live)"
+echo "planted-hook-walk: OK (neither the chain, nor the engine's own verb, nor the seal of a clone runs git in the attempt; the plants are live)"
