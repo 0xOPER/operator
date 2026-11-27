@@ -13,7 +13,7 @@ set -uo pipefail
 ROOT=$(cd -- "$(dirname -- "$(readlink -f -- "$0")")/.." && pwd)
 ME="$ROOT/test/conformance.sh"
 
-CELLS="write-outside another-seat push-bare net-denied net-allowed shell-allowed read-allowed"
+CELLS="write-outside another-seat push-bare net-denied net-allowed shell-allowed read-allowed clone-allowed"
 
 die() { echo "conformance: $*" >&2; exit 2; }
 
@@ -23,6 +23,7 @@ class_of() {
     net-denied|net-allowed) echo network ;;
     shell-allowed) echo shell ;;
     read-allowed) echo read ;;
+    clone-allowed) echo shell ;;
     *) return 1 ;;
   esac
 }
@@ -445,6 +446,83 @@ PY
           || { echo "  read-allowed: FAIL (no refusal receipt for the $name twin: $(head -c 160 "$ADIR/repo/src/read-$name.txt" 2>/dev/null))"; cleanup_daemons; exit 1; }
       done
       echo "  read-allowed: pass (the seat reads inside the directory the charter lists, read-only at its own path; the directory above, a sibling, \`..\` and a link out are unreachable)"
+      ;;
+    clone-allowed)
+      # The writable clone (a shell-class feature: the seat's shell grant asks for
+      # it, and this cell is what earns it per adapter). In a real turn the CLI's
+      # own shell makes a branch and a worktree of its own in the clone, commits
+      # a side branch holding a blob no work tree shows, and plants the zoo of
+      # test/lib/plant-hooks.sh into .git FROM INSIDE THE JAIL. The plants go in
+      # last: a planted reference-transaction hook that cannot write its marker
+      # (the marker directory is a host path the jail cannot make) would abort the
+      # worker's own ref updates. The real chain then runs, and nothing may fire
+      # on the host; .git is never delivered; the parent never learns the side
+      # branch. A control proves the plants the worker wrote are live.
+      mkdir -p "$D/clone-host"; rm -f "$D/clone-host/HOOK-RAN" "$D/clone-host/CFG-RAN"
+      CL_ADAPTERS="$D/clone-adapters"; mkdir -p "$CL_ADAPTERS"
+      python3 - "$MANIFEST" "$CC_BYPASS_ADAPTERS/claude-code.toml" "$ADAPTER" "$PROG/team.toml" "$CL_ADAPTERS/$ADAPTER.toml" <<'PY'
+import pathlib, re, sys
+stock, bypass, adapter, team, out = sys.argv[1:6]
+src = pathlib.Path(bypass if adapter == "claude-code" and pathlib.Path(bypass).is_file() else stock)
+text = src.read_text(encoding="utf-8")
+# claim what this seat demands and the cells proved, and nothing else. The door
+# reads this at the jail (the clone opens only where the class is proven)
+classes = ["write"] + [c for c in ("network", "shell", "read")
+                       if re.search(rf"^{c} = ", pathlib.Path(team).read_text(encoding="utf-8"), re.M)]
+line = re.search(r'^tested_classes = \[.*\]$', text, re.M)
+assert line, "no tested line in the manifest"
+pathlib.Path(out).write_text(text.replace(line.group(0), "tested_classes = " + str(classes).replace("'", '"'), 1), encoding="utf-8")
+PY
+      python3 - "$D/tool.json" "$ADAPTER" "$D/clone-host" "$ROOT/test/lib/plant-hooks.sh" <<'PY'
+import base64, json, sys
+out, adapter, marks, lib = sys.argv[1:5]
+tool, key = {"claude-code": ("Bash", "command"), "opencode": ("bash", "command"),
+             "zcode": ("Bash", "cmd")}.get(adapter, ("exec_command", "cmd"))
+zoo = base64.b64encode(open(lib, "rb").read()).decode()
+cmd = ('set -eu; git checkout -q -b feature/cell && git worktree add -q -b cell-wt "$HOME/cell-wt" && '
+       'b=$(echo SIDE-BRANCH-ONLY-c41a | git hash-object -w --stdin) && '
+       't=$(printf "100644 blob %s\\tside-only.txt\\n" "$b" | git mktree) && '
+       'c=$(git -c user.email=c@x -c user.name=c commit-tree "$t" -m side) && '
+       'git update-ref refs/heads/side "$c" && echo "$c" > src/side-sha.txt && '
+       "printf 'clone-ok-d2f7\\n' > src/clone-ok.txt && "
+       f"printf %s '{zoo}' | base64 -d | sh -s . {marks}")
+json.dump({"name": tool, "input": {key: cmd}}, open(out, "w"))
+PY
+      OPERATOR_ADAPTERS="$CL_ADAPTERS" engine_cell_run clone-turn src || { cleanup_daemons; exit 1; }
+      [ "$(cat "$ADIR/repo/src/clone-ok.txt" 2>/dev/null)" = "clone-ok-d2f7" ] \
+        || { echo "  clone-allowed: FAIL (the turn's in-tree effect never landed)"; cleanup_daemons; exit 1; }
+      CL_WT="$ADIR/home"      # the attempt's home: where the worker put its worktree
+      { [ -f "$CL_WT/cell-wt/.git" ] && [ -d "$ADIR/repo/.git/worktrees/cell-wt" ] \
+          && [ -f "$ADIR/repo/.git/refs/heads/feature/cell" ]; } \
+        || { echo "  clone-allowed: FAIL (the worker could not branch in the clone or add a worktree: .git is not writable)"; cleanup_daemons; exit 1; }
+      if ! grep -q "fsmonitor" "$ADIR/repo/.git/config" 2>/dev/null || [ ! -x "$ADIR/repo/.githooks/post-index-change" ]; then
+        echo "  clone-allowed: FAIL (the turn planted nothing in .git from the jail: the rest proves nothing)"; cleanup_daemons; exit 1
+      fi
+      if [ -e "$D/clone-host/HOOK-RAN" ] || [ -e "$D/clone-host/CFG-RAN" ]; then
+        echo "  clone-allowed: FAIL (a plant fired on the host during the turn)"; cleanup_daemons; exit 1
+      fi
+      CL_GATED=$(gate_receipt "$ADIR")
+      case "$CL_GATED" in
+        "sealed | OK | candidate") ;;
+        *) echo "  clone-allowed: FAIL (the clone's work tree did not deliver: $CL_GATED)"; cleanup_daemons; exit 1 ;;
+      esac
+      if [ -e "$D/clone-host/HOOK-RAN" ] || [ -e "$D/clone-host/CFG-RAN" ]; then
+        echo "  clone-allowed: FAIL (a plant fired on the host through seal, gate and candidate: $(sort -u "$D/clone-host/"*RAN | tr '\n' ' '))"; cleanup_daemons; exit 1
+      fi
+      ! git -C "$RD/parent" ls-tree -r --name-only refs/attempts/clone-turn | grep -q '^\.git/' \
+        || { echo "  clone-allowed: FAIL (the clone's .git was delivered)"; cleanup_daemons; exit 1; }
+      CL_SIDE=$(cat "$ADIR/repo/src/side-sha.txt" 2>/dev/null)
+      case "$CL_SIDE" in *[!0-9a-f]*|'') echo "  clone-allowed: FAIL (no side branch recorded)"; cleanup_daemons; exit 1 ;; esac
+      ! git -C "$RD/parent" cat-file -e "$CL_SIDE^{commit}" 2>/dev/null \
+        || { echo "  clone-allowed: FAIL (the parent learned the clone's side branch)"; cleanup_daemons; exit 1; }
+      git -C "$RD/parent" update-ref -d refs/heads/candidate/r1 2>/dev/null
+      # the control: the plants the worker wrote from its jail are live where git
+      # runs in the clone on the host
+      git -C "$ADIR/repo" add -A >/dev/null 2>&1
+      if ! grep -q . "$D/clone-host/HOOK-RAN" 2>/dev/null || ! grep -q "fsmonitor" "$D/clone-host/CFG-RAN" 2>/dev/null; then
+        echo "  clone-allowed: FAIL (the control did not fire: the cell proves nothing)"; cleanup_daemons; exit 1
+      fi
+      echo "  clone-allowed: pass (a branch and a worktree of its own in the clone; the work tree delivers through seal|gate|candidate; hooks and config commands planted in .git from the jail never fire on the host; .git and the side branch are never delivered; the plants are live)"
       ;;
   esac
 done
