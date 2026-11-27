@@ -13,14 +13,14 @@ set -uo pipefail
 ROOT=$(cd -- "$(dirname -- "$(readlink -f -- "$0")")/.." && pwd)
 ME="$ROOT/test/conformance.sh"
 
-CELLS="write-outside another-seat push-bare net-denied"
+CELLS="write-outside another-seat push-bare net-denied net-allowed"
 
 die() { echo "conformance: $*" >&2; exit 2; }
 
 class_of() {
   case "$1" in
     write-outside|another-seat|push-bare) echo write ;;
-    net-denied) echo network ;;
+    net-denied|net-allowed) echo network ;;
     *) return 1 ;;
   esac
 }
@@ -103,10 +103,12 @@ CELL_DIALECT=anthropic
 [ "$ADAPTER" = codex ] && CELL_DIALECT=codex  # census: allow
 ENGINE_BROKER=
 STUB=
+TLS_PID=
 
 cleanup_daemons() {
   [ -n "${ENGINE_BROKER:-}" ] && kill "$ENGINE_BROKER" 2>/dev/null
   [ -n "${STUB:-}" ] && kill "$STUB" 2>/dev/null
+  [ -n "${TLS_PID:-}" ] && kill "$TLS_PID" 2>/dev/null
 }
 
 printf '%s' '{"name":"placeholder"}' > "$D/tool.json"
@@ -258,6 +260,80 @@ for cell in $ASKED; do
       engine_cell_result | grep -qiE "could not resolve|connection|refused|failed|unable|timed out" \
         || { echo "  net-denied: FAIL (no network-refusal receipt upstream)"; cleanup_daemons; exit 1; }
       echo "  net-denied: pass (the broker face answers; jailed netns refuses foreign host, receipt upstream)"
+      ;;
+    net-allowed)
+      # The charter opens one host for this seat and pins it to a TLS listener
+      # on loopback; the jail's egress proxy is the door. The allowed twin
+      # fetches through it and lands the listener's body; a host outside the
+      # charter is refused and both connections leave a log row. The adapter's
+      # manifest claims the class only once this cell is green.
+      command -v openssl >/dev/null 2>&1 || { echo "  net-allowed: VOID (the pinned TLS listener needs openssl)"; cleanup_daemons; exit 2; }
+      TLS="$D/tls"; mkdir -p "$TLS"
+      openssl req -x509 -newkey rsa:2048 -nodes -keyout "$TLS/key.pem" -out "$TLS/cert.pem" \
+        -subj "/CN=allowed.test" -days 1 >/dev/null 2>&1 || { cleanup_daemons; die "no certificate for the listener"; }
+      TLS_PORT=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')
+      python3 - "$TLS" "$TLS_PORT" > "$D/tls.log" 2>&1 <<'PY' &
+import http.server, os, ssl, sys
+tls, port = sys.argv[1], int(sys.argv[2])
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = b"REGISTRY-BODY-7c1\n"
+        self.send_response(200)
+        self.send_header("content-length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    def log_message(self, *a):
+        pass
+srv = http.server.HTTPServer(("127.0.0.1", port), H)
+ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+ctx.load_cert_chain(os.path.join(tls, "cert.pem"), os.path.join(tls, "key.pem"))
+srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+srv.serve_forever()
+PY
+      TLS_PID=$!
+      python3 - "$PROG/team.toml" <<'PY'
+import pathlib, sys
+p = pathlib.Path(sys.argv[1]); t = p.read_text(encoding="utf-8")
+assert 'write = ["src/**"]\n' in t
+p.write_text(t.replace('write = ["src/**"]\n', 'write = ["src/**"]\nnetwork = ["allowed.test"]\n', 1), encoding="utf-8")
+PY
+      cat > "$PROG/charter.toml" <<TOML
+schema = 1
+name = "cell"
+
+[reach]
+profile = "closed"
+allow = ["allowed.test"]
+pins = ["allowed.test=127.0.0.1:$TLS_PORT"]
+TOML
+      NET_ADAPTERS="$D/net-adapters"; mkdir -p "$NET_ADAPTERS"
+      python3 - "$MANIFEST" "$CC_BYPASS_ADAPTERS/claude-code.toml" "$ADAPTER" "$NET_ADAPTERS/$ADAPTER.toml" <<'PY'
+import pathlib, sys
+stock, bypass, adapter, out = sys.argv[1:5]
+src = pathlib.Path(bypass if adapter == "claude-code" and pathlib.Path(bypass).is_file() else stock)
+text = src.read_text(encoding="utf-8")
+tested = text.split("tested_classes", 1)[1].split("\n", 1)[0]
+if '"network"' not in tested:
+    # the manifest doesn't claim the class yet: this cell is what would earn it
+    old = 'tested_classes = ["write"]'
+    assert old in text, "the manifest's tested line isn't the one-key line this cell extends"
+    text = text.replace(old, 'tested_classes = ["write", "network"]', 1)
+pathlib.Path(out).write_text(text, encoding="utf-8")
+PY
+      emit_shell '"mkdir -p src && curl -s -k -m 20 https://allowed.test/data -o src/allowed.txt"' > "$D/tool.json"
+      OPERATOR_ADAPTERS="$NET_ADAPTERS" engine_cell_run net-in-policy || { cleanup_daemons; exit 1; }
+      [ "$(cat "$ADIR/repo/src/allowed.txt" 2>/dev/null)" = "REGISTRY-BODY-7c1" ] \
+        || { echo "  net-allowed: FAIL (the allowed twin didn't land the pinned listener's body: $(head -c 120 "$ADIR/repo/src/allowed.txt" 2>/dev/null))"; cleanup_daemons; exit 1; }
+      grep -q "allowed allowed.test" "$ADIR/egress/egress.log" 2>/dev/null \
+        || { echo "  net-allowed: FAIL (no log row for the allowed connection)"; cleanup_daemons; exit 1; }
+      emit_shell '"mkdir -p src && curl -s -k -m 10 https://denied.test/x -o src/denied.txt 2>&1 || true"' > "$D/tool.json"
+      OPERATOR_ADAPTERS="$NET_ADAPTERS" engine_cell_run net-outside-policy || { cleanup_daemons; exit 1; }
+      [ -e "$ADIR/repo/src/denied.txt" ] && { echo "  net-allowed: FAIL (a host outside the charter landed a file)"; cleanup_daemons; exit 1; }
+      engine_cell_result | grep -qiE "could not resolve|connection|refused|failed|unable|timed out|403" \
+        || { echo "  net-allowed: FAIL (no refusal receipt for the host outside the charter)"; cleanup_daemons; exit 1; }
+      grep -q "refused denied.test" "$ADIR/egress/egress.log" 2>/dev/null \
+        || { echo "  net-allowed: FAIL (no log row for the refused connection)"; cleanup_daemons; exit 1; }
+      echo "  net-allowed: pass (the charter's host is fetched through the proxy; a host outside it is refused and logged)"
       ;;
     *) die "unknown cell $cell" ;;
   esac

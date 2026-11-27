@@ -35,6 +35,7 @@ exit: 0 the command's own code, 1 refused or a finding, 2 usage or VOID,
 """
 import contextlib
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -70,6 +71,9 @@ USER_RE = re.compile(r"^([1-9][0-9]{0,9}):([1-9][0-9]{0,9})$")
 HOST_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$")
 MOUNT_RE = re.compile(r"^(/[A-Za-z0-9._+/-]*):(ro|rw)$")
 WRITABLE_RE = re.compile(r"^(/[A-Za-z0-9._+-]+(?:/[A-Za-z0-9._+-]+)*):([0-9]+[kmg])$")
+# the operator's vouch for a reach host: host=address:port (bin/reach.py reads it)
+PIN_RE = re.compile(r"^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*"
+                    r")=((?:\d{1,3}\.){3}\d{1,3}):(\d{1,5})$")
 # a host path an environment may never mount: the roots of the host itself and
 # the daemon's sockets. The engine's own tree and state join at validate time.
 SYSTEM_PATHS = ("/", "/bin", "/boot", "/dev", "/etc", "/home", "/lib", "/lib32",
@@ -119,6 +123,13 @@ def die(msg, code):
 
 def sh(argv, **kw):
     return subprocess.run(argv, capture_output=True, text=True, stdin=subprocess.DEVNULL, **kw)
+
+
+def short_dir():
+    """Where an AF_UNIX socket may live: the shortest writable of /tmp and the
+    temp dir. A socket path is capped at 108 bytes; an attempt's is not short."""
+    return min((c for c in ("/tmp", tempfile.gettempdir())
+                if os.path.isdir(c) and os.access(c, os.W_OK)), key=len)
 
 
 def extra_roots():
@@ -173,7 +184,7 @@ def charter_findings(doc):
         out.append(f"name must be [a-z0-9][a-z0-9._-]{{0,63}}, not {doc.get('name')!r}")
     sections = (("standing", ("not_after",)),
                 ("purse", ("usd", "minutes", "context", "concurrency")),
-                ("reach", ("profile", "declared_max", "declared_ttl", "allow", "deny")),
+                ("reach", ("profile", "declared_max", "declared_ttl", "allow", "deny", "pins")),
                 ("evidence", ("min_mutation_kill",)),
                 ("reserved", ("extra",)))
     body_of = {}
@@ -206,6 +217,9 @@ def charter_findings(doc):
     for k in ("allow", "deny"):
         if k in reach and not _hosts(reach[k]):
             out.append(f"[reach] {k} must be a list of hosts")
+    if "pins" in reach and not (isinstance(reach["pins"], list)
+                                and all(pin_ok(p) for p in reach["pins"])):
+        out.append("[reach] pins is a list of 'host=address:port' (an IPv4 address, a port below 65536)")
     if "min_mutation_kill" in evidence and not (
             _number(evidence["min_mutation_kill"]) and 0 <= evidence["min_mutation_kill"] <= 1):
         out.append("[evidence] min_mutation_kill is a share between 0 and 1")
@@ -215,6 +229,18 @@ def charter_findings(doc):
         out.append("[reserved] extra must be a list of names, [a-z0-9][a-z0-9._-]{0,63}")
     out += environment_findings(doc)
     return out
+
+
+def pin_ok(pin):
+    """A charter pin is 'host=IPv4:port' with a real address and a real port."""
+    m = isinstance(pin, str) and PIN_RE.fullmatch(pin)
+    if not m:
+        return False
+    try:
+        ipaddress.ip_address(m.group(5))
+    except ValueError:
+        return False
+    return int(m.group(6)) <= 65535
 
 
 def mount_refusal(host, roots=()):
@@ -620,9 +646,7 @@ class Door:
         os.makedirs(self.work, mode=0o700, exist_ok=True)
         # an AF_UNIX path is capped at 108 bytes and an attempt's path is not
         # the engine's to shorten: the socket lives in a short private directory
-        short = min((c for c in ("/tmp", tempfile.gettempdir())
-                     if os.path.isdir(c) and os.access(c, os.W_OK)), key=len)
-        self._room = tempfile.mkdtemp(prefix="op-envd-", dir=short)
+        self._room = tempfile.mkdtemp(prefix="op-envd-", dir=short_dir())
         self.sock = os.path.join(self._room, "s.sock")
         self._srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self._srv.bind(self.sock)
@@ -981,6 +1005,11 @@ def selftest():
                   charter_text() + "\n[reach]\nprofile = \"open\"\n")
         validates("must be a non-negative number", "V18d a negative purse is refused",
                   charter_text() + "\n[purse]\nusd = -1\n")
+        for badpin in ("a.example=999.1.1.1:1", "a.example=192.0.2.1:99999", "a.example", "a=b:1"):
+            validates("pins is a list", f"V19 a reach pin that isn't host=address:port refuses ({badpin})",
+                      charter_text() + f'\n[reach]\npins = ["{badpin}"]\n')
+        clean(charter_text() + '\n[reach]\npins = ["a.example=192.0.2.1:8443"]\n',
+              "V19 a well-formed reach pin validates")
 
         # C a contract row's laws
         import contract as contract_mod

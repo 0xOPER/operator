@@ -50,6 +50,7 @@ bin/lint-spawn.py
 bin/memory.py
 bin/operator.sh
 bin/panel.py
+bin/reach.py
 bin/review.py
 bin/rules.py
 bin/ruling.py

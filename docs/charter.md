@@ -178,6 +178,15 @@ and the broker stays the only door that has one.
   encrypted tunnel cannot be read; that limit is stated, not hidden.
 - A `closed` profile keeps today's behaviour for repositories that need it.
 
+Built so far (M2, first slice): the policy comes from the charter and the proxy
+re-reads it on every connection; a seat's `network` grant is bounded by the
+charter and refused outside it; the jail gets the proxy as its only door, with
+one log row per connection; `network` is in the `tested_classes` of
+`claude-code`, `codex` and `opencode`, each with a `net-allowed` conformance
+cell. Open: the `declared` rule and the `net.allow` verb (they come with the
+manager), the refusal of bodies that carry a live credential, and the writable
+clone.
+
 A worker's `.git` is bound read-only today, which rules out worktree fan-out. A
 seat that needs fan-out gets a real writable clone only when a conformance
 cell proves that a hook planted there never runs host-side.
@@ -420,7 +429,7 @@ each row by delegation.
 |---|---|---|---|
 | M0 | Charter law | the signed plan | this document |
 | M1 | Environments | container and GPU work | built: the charter, the door, `env` rows, the worker socket. The exit is the parked program's two rows closing as machine rows |
-| M2 | Reach | network, shell, read | open |
+| M2 | Reach | network, shell, read | first slice built: a seat's network from the charter, through the egress proxy. Open: the `declared` rule, `net.allow`, the credential refusal, `shell` and `read` |
 | M3 | Evidence | contract authoring as a precondition | open |
 | M4 | The manager | triage seat becomes executive | open |
 | M5 | Enclose | external orchestrators as workers or managers | open, gated on probes |

@@ -57,11 +57,26 @@ working examples (copy them via `bin/operator.sh init` rather than editing
 `profiles/templates/` in place, which dirties the engine repo and causes
 `ruling sign` to refuse).
 
-> **Enforceability & inert keys at v0.1:** Every shipped adapter manifest
-> declares `tested_classes = ["write"]`, so `read`, `network`, `shell`, and seat
-> `mcp` grants are currently **refused** by `bin/team.py` for all adapters.
-> `memory`, `skills`, and `mcp` declarations are currently **inert** (accepted
-> with a note, not yet wired to enforcement).
+> **Enforceability & inert keys:** `claude-code`, `codex` and `opencode` declare
+> `tested_classes = ["write", "network"]`, each with a green `net-allowed`
+> conformance cell; the others declare `write` only. A grant outside its
+> adapter's tested range is **refused** by `bin/team.py`. `read`, `shell`, and
+> seat `mcp` grants are **refused** for every adapter. `memory`, `skills`, and
+> `mcp` declarations are currently **inert** (accepted with a note, not yet
+> wired to enforcement).
+
+### The seat's network (`network`)
+
+A seat asks for a network with `network = ["pypi.org"]`, or `["*"]` for the
+charter's whole reach. The charter bounds it (`docs/charter.md`): every host
+must be inside `[reach]` (its profile's categories or its `allow` list), a
+`[reach].deny` host beats every allow, and `bin/operator.sh team validate`
+refuses a grant outside it by name. In the seat's jail the egress proxy is then
+the only door: the standard proxy variables are set for every CLI and tool,
+each connection is one log row under the attempt's `egress/`, and a host
+outside the policy is refused. The broker is never proxied. Port 443 is
+served; another port is a `[reach].pins` entry. `bin/reach.py policy <dir>
+--seat <seat>` prints the policy a seat's jail runs.
 
 The `stub` adapter is the fixture worker: its steps come from
 `plans/<task>.json` in the program dir (engine-side authoring -- the plan is

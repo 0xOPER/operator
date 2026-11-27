@@ -633,7 +633,7 @@ def build_attempt(rd, seat, grants, ref, aid, task, prog, seats):
     # walk's row -- visibility rode the write grant, so naming a tree visible
     # (a .github with a hundred files) meant widening DELIVERY. `see` names
     # paths for the checkout only; the tree check still gates on the grants.
-    see, gpu, ro, env = [], False, [], []
+    see, gpu, ro, env, network = [], False, [], [], []
     if prog:
         try:
             _, seats_doc, _ = load_team(prog)
@@ -644,6 +644,7 @@ def build_attempt(rd, seat, grants, ref, aid, task, prog, seats):
         gpu = seat_doc.get("gpu") is True
         ro = [os.path.realpath(p) for p in (seat_doc.get("ro") or [])]
         env = list(seat_doc.get("env") or [])
+        network = list(seat_doc.get("network") or [])
     visible = grants + see
     stage_info = os.path.join(stage_repo, ".git", "info")
     os.makedirs(stage_info, exist_ok=True)
@@ -669,7 +670,7 @@ def build_attempt(rd, seat, grants, ref, aid, task, prog, seats):
     meta = {"id": aid, "seat": seat, "grants": grants, "see": see, "ref": ref,
             "start": start_sha, "task": task, "prog": prog,
             "seats": [x for x in (seats or []) if x],
-            "gpu": gpu, "ro": ro, "env": env,
+            "gpu": gpu, "ro": ro, "env": env, "network": network,
             "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     # a queued reply rides this attempt's mail, once: the pending note is
     # consumed here so a second reply re-pends instead of stacking silently
@@ -1482,6 +1483,95 @@ def env_door(attempt, meta):
     return env_mod.Door(attempt, prog, grants, budget_secs=budget).start()
 
 
+def egress_plan(attempt, meta):
+    """The egress files of a seat with a network grant (docs/charter.md): the
+    policy under the attempt and the log beside it. The charter bounds the
+    grant here, where the jail is built: an uncovered host refuses the turn.
+    Returns (policy_path, log_path), or None for a seat without a grant."""
+    if not meta.get("network"):
+        return None
+    import reach as reach_mod
+    edir = os.path.join(attempt, "egress")
+    os.makedirs(edir, exist_ok=True)
+    policy_path, log_path = os.path.join(edir, "policy"), os.path.join(edir, "egress.log")
+    try:
+        lines = reach_mod.policy(meta.get("prog"), meta["network"])
+    except reach_mod.Finding as e:
+        raise Refused(f"the seat's network grant isn't inside the charter's reach: {e}")
+    with open(policy_path, "w", encoding="ascii") as f:
+        f.write("\n".join(lines) + "\n")
+    return policy_path, log_path
+
+
+def egress_start(policy_path, log_path):
+    """The host-side proxy of one turn: the only way out of the jail's netns.
+    Its socket lives on a short path (AF_UNIX caps a path at 108 bytes).
+    Returns (proc, socket_path_or_None, room)."""
+    import environment as env_mod
+    room = tempfile.mkdtemp(prefix="op-egress-", dir=env_mod.short_dir())
+    proc = subprocess.Popen(
+        [sys.executable, "-I", os.path.join(ROOT, "bin", "egress-proxy.py"), "serve",
+         room, policy_path, log_path, "--name", "egress.sock"],
+        env={"PATH": "/usr/bin:/bin", "HOME": "/tmp"}, stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    sock = os.path.join(room, "egress.sock")
+    for _ in range(50):
+        if os.path.exists(sock) or proc.poll() is not None:
+            break
+        time.sleep(0.1)
+    return proc, (sock if os.path.exists(sock) else None), room
+
+
+def egress_stop(proc, room):
+    """Ends the turn's proxy: this child and no other, then its room."""
+    if proc is not None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+    if room:
+        shutil.rmtree(room, ignore_errors=True)
+
+
+def egress_binds(sock):
+    """The jail's side: the proxy's socket, and the proxy's own relay leg."""
+    return ["--bind", sock, "/egress.sock",
+            "--ro-bind", os.path.join(ROOT, "bin", "egress-proxy.py"), "/engine/egress-proxy.py"]
+
+
+def egress_env():
+    """Every CLI's standard proxy variables, aimed at the in-jail face; the
+    broker's own face is excluded so the one door with a key stays direct."""
+    import reach as reach_mod
+    url = f"http://127.0.0.1:{reach_mod.PROXY_PORT}"
+    return [("HTTP_PROXY", url), ("HTTPS_PROXY", url), ("http_proxy", url), ("https_proxy", url),
+            ("NO_PROXY", "127.0.0.1,localhost"), ("no_proxy", "127.0.0.1,localhost")]
+
+
+def egress_wrapper(next_script):
+    """The in-jail leg: a relay gives the proxy's socket a loopback face on the
+    proxy port, the turn waits for it (the load-paid-for wait of the broker's
+    own relay), then the next launcher runs."""
+    import reach as reach_mod
+    port = reach_mod.PROXY_PORT
+    return ("#!/bin/sh\n"
+            "# engine-written: the relay gives the egress proxy's socket a\n"
+            "# loopback face inside this netns, then the next launcher runs.\n"
+            f"python3 -I /engine/egress-proxy.py relay /egress.sock --port {port} >/dev/null 2>&1 &\n"
+            "python3 -I -c 'import socket,sys,time\n"
+            "for _ in range(100):\n"
+            "    try:\n"
+            f"        s = socket.create_connection((\"127.0.0.1\", {port}), 1)\n"
+            "        s.close(); sys.exit(0)\n"
+            "    except OSError:\n"
+            "        time.sleep(0.1)\n"
+            "sys.exit(1)' || { echo \"run-with-egress: the egress relay never answered on "
+            f"{port}\" >&2; exit 2; }}\n"
+            f'exec /bin/sh {next_script} "$@"\n')
+
+
 def worker_argv(attempt, cmd, etc_dir, nproc=NPROC):
     """The worker jail: repo rw, .git ro, out and home rw, compiled ro, generated
     identifiers over a bare /etc, prlimit nproc inside, fsize and core outside."""
@@ -1961,6 +2051,7 @@ def cmd_adapter(attempt, timeout):
         extra_binds += ["--ro-bind", cli_dir, "/opt/cli"]
         cli_bins = "/opt/cli/bin:"
     door = env_door(attempt, meta)
+    egress = None
     tmp = tempfile.mkdtemp(prefix="spawn-etc.")
     try:
         etc = generated_etc(tmp)
@@ -1977,6 +2068,21 @@ def cmd_adapter(attempt, timeout):
             adapter_e.update(hook_log)
         _write_adapter_env(attempt, adapter_e)
         argv = broker_argv or ["/engine/run-adapter.sh", *argv]
+        if meta.get("network"):
+            # the seat's reach: the proxy runs host-side for this turn, its
+            # socket binds into the jail, an in-jail relay gives it a loopback
+            # face, and the standard proxy variables point every CLI at it
+            proc_e, sock_e, room_e = egress_start(*egress_plan(attempt, meta))
+            if sock_e is None:
+                egress_stop(proc_e, room_e)
+                raise Void("the egress proxy never bound for this attempt")
+            egress = (proc_e, room_e)
+            extra_binds += egress_binds(sock_e)
+            setenvs += egress_env()
+            with open(os.path.join(attempt, "compiled", "run-with-egress.sh"), "w") as f:
+                f.write(egress_wrapper("/w/compiled/run-with-relay.sh" if broker_argv
+                                       else "/engine/run-adapter.sh"))
+            argv = ["/bin/sh", "/w/compiled/run-with-egress.sh", *argv]
         binds = jail_binds_for(attempt, etc, repo_rw=not bool(meta.get("review_turn"))) + extra_binds
         nproc = NPROC + int(manifest.get("nproc_headroom", 0))
         prl_inner = ["prlimit", f"--nproc={nproc}"]
@@ -2013,6 +2119,8 @@ def cmd_adapter(attempt, timeout):
     finally:
         if door is not None:
             door.close()
+        if egress is not None:
+            egress_stop(*egress)
         shutil.rmtree(tmp, ignore_errors=True)
     meta["broker"] = broker_url
     meta["model"] = seat_model_of(attempt, manifest)
@@ -3165,6 +3273,65 @@ def selftest():
             check(not os.path.exists(sock_se), "S-env the door's socket goes with the turn")
         finally:
             shutil.rmtree(adir_se, ignore_errors=True)
+        # S-net a seat's reach (docs/charter.md): the grant rides the meta, the
+        # charter bounds it, the policy lands under the attempt, and the jail
+        # side is the socket, the relay leg and the proxy variables
+        prog_sn = _program(home, "p-net", team_body='schema = 1\nname = "t"\nmax_parallel = 1\n'
+                           '[seat.w]\nrole = "roles/w.md"\nadapter = "stub"\nwrite = ["src/**"]\n'
+                           'network = ["api.example.org"]\n')
+        with open(os.path.join(prog_sn, "charter.toml"), "w") as f:
+            f.write('schema = 1\nname = "st"\n\n[reach]\nprofile = "closed"\n'
+                    'allow = ["api.example.org"]\ndeny = ["bad.example.org"]\n'
+                    'pins = ["api.example.org=192.0.2.10:8443"]\n')
+        rd_sn, _parent_sn, _ = _world(home, "w-net", {"src/a.py": "v=1\n"})
+        adir_sn = build_attempt(rd_sn, "w", ["src/**"], "integration/R", "sn-1", "r1", prog_sn, ["w"])
+        try:
+            check(meta_load(adir_sn).get("network") == ["api.example.org"],
+                  "S-net the seat's network grant rides the attempt's meta")
+            check(egress_plan(a, meta_load(a)) is None, "S-net no grant, no egress files")
+            pol_p, log_p = egress_plan(adir_sn, meta_load(adir_sn))
+            pol_t = open(pol_p, encoding="ascii").read()
+            check(pol_t.splitlines() == ["# the boundary: the charter's reach, narrowed to this seat",
+                                         "!bad.example.org", "api.example.org",
+                                         "pin api.example.org 192.0.2.10 8443"]
+                  and log_p == os.path.join(adir_sn, "egress", "egress.log"),
+                  f"S-net the policy under the attempt is the charter's reach, narrowed: {pol_t!r}")
+            proc_n, sock_n, room_n = egress_start(pol_p, log_p)
+            check(sock_n is not None and os.path.exists(sock_n) and len(sock_n.encode()) < 100,
+                  "S-net the proxy binds on a short path")
+            b_n = egress_binds(sock_n)
+            check(b_n[:4] == ["--bind", sock_n, "/egress.sock", "--ro-bind"]
+                  and b_n[5] == "/engine/egress-proxy.py",
+                  f"S-net the jail binds the socket and the relay leg: {b_n}")
+            e_n = dict(egress_env())
+            check(e_n["HTTPS_PROXY"] == "http://127.0.0.1:3129" and e_n["http_proxy"] == e_n["HTTP_PROXY"]
+                  and e_n["NO_PROXY"] == "127.0.0.1,localhost" and len(e_n) == 6,
+                  f"S-net the proxy variables aim every CLI at the in-jail face: {e_n}")
+            w_n = egress_wrapper("/w/compiled/run-with-relay.sh")
+            check("relay /egress.sock --port 3129" in w_n and "never answered on 3129" in w_n
+                  and w_n.rstrip().endswith('exec /bin/sh /w/compiled/run-with-relay.sh "$@"'),
+                  "S-net the wrapper relays, waits, then runs the next launcher")
+            # the proxy answers for its policy: an uncovered host is refused and logged
+            import socket as _sock
+            s_c = _sock.socket(_sock.AF_UNIX, _sock.SOCK_STREAM)
+            s_c.settimeout(10)
+            s_c.connect(sock_n)
+            s_c.sendall(b"CONNECT bad.example.org:443 HTTP/1.1\r\nHost: bad.example.org:443\r\n\r\n")
+            head_c = s_c.recv(200)
+            s_c.close()
+            check(b" 403" in head_c, f"S-net the running proxy refuses a denied host: {head_c[:60]!r}")
+            log_t = ""
+            for _ in range(40):   # the proxy writes its row from the connection's own thread
+                log_t = open(log_p, encoding="ascii").read() if os.path.exists(log_p) else ""
+                if "bad.example.org" in log_t:
+                    break
+                time.sleep(0.05)
+            check("refused bad.example.org" in log_t.replace("\t", " ").replace("  ", " "),
+                  f"S-net one log row per connection, the refusal named: {log_t!r}")
+            egress_stop(proc_n, room_n)
+            check(not os.path.exists(room_n), "S-net the proxy's room goes with the turn")
+        finally:
+            shutil.rmtree(adir_sn, ignore_errors=True)
         prog_s0 = _program(home, "p-plain")
         adir_s0 = build_attempt(rd_se, "w", ["src/**"], "integration/R", "s0-1", "r1", prog_s0, ["w"])
         try:
@@ -4471,6 +4638,35 @@ def selftest():
         shutil.rmtree(base, ignore_errors=True)
 
 
+def _mutant_leftovers(attempt):
+    """What a mutant leaves behind is this attempt's own and no other process's:
+    the environment door's room (its record names the socket) and the egress
+    proxies still serving this attempt's policy. Stopped by pid, rooms removed."""
+    import shutil as _sh
+    rec = os.path.join(attempt, "envd", "sock")
+    if os.path.isfile(rec):
+        with open(rec, encoding="utf-8") as f:
+            room = os.path.dirname(f.read().strip())
+        if room and os.path.basename(room).startswith("op-envd-"):
+            _sh.rmtree(room, ignore_errors=True)
+    pol = os.path.join(attempt, "egress", "policy")
+    found = subprocess.run(["pgrep", "-f", f"serve .* {re.escape(pol)}"],
+                           capture_output=True, text=True).stdout.split()
+    for pid in found:
+        try:
+            with open(f"/proc/{int(pid)}/cmdline", "rb") as f:
+                argv = f.read().split(b"\0")
+            # `serve <room> <policy> <log>`: the first argument IS the room. The
+            # name check stays: a path that isn't one of ours is never removed
+            room = argv[argv.index(b"serve") + 1].decode("utf-8", "replace")
+            if os.path.basename(room).startswith("op-egress-") and os.path.dirname(room) in ("/tmp", tempfile.gettempdir()):
+                _sh.rmtree(room, ignore_errors=True)
+            os.kill(int(pid), 15)
+        except (OSError, ValueError, IndexError):
+            pass
+    return found
+
+
 def first_level():
     """The jail arms: the worker sandbox, the seal states, the collector, the limits.
     Needs bwrap, so this runs outside the clean room (decision 35)."""
@@ -4895,6 +5091,7 @@ def first_level():
               f"err={e_se[-200:]!r}")
         check(not os.path.exists(open(os.path.join(a_se, "envd", "sock")).read().strip()),
               "S-env the turn's end took the socket away")
+        _mutant_leftovers(a_se)
         shutil.rmtree(a_se, ignore_errors=True)
         # S-env (adapter) an adapter turn on a seat with grants gets the same
         # door: the client in the adapter's jail reaches the engine, and the
@@ -4944,7 +5141,65 @@ def first_level():
                 else:
                     os.environ[k] = v
             if ad_se:
+                _mutant_leftovers(ad_se)
+            if ad_se:
                 shutil.rmtree(ad_se, ignore_errors=True)
+        # S-net (adapter) a seat with a network grant gets the egress proxy as
+        # its jail's only door: in a real jail the in-jail face answers, the
+        # standard proxy variables are set, and a host outside the charter is
+        # refused by the proxy and logged. No TLS or real CLI is needed: the
+        # ask is a bare CONNECT the proxy must refuse
+        old_sn = {k: os.environ.get(k) for k in ("OPERATOR_ADAPTERS", "OPERATOR_BROKER",
+                                                 "OPERATOR_CREDENTIAL")}
+        ad_sn = None
+        try:
+            fl_prog_sn = _program(home, "fl-net-ad", team_body='schema = 1\nname = "t"\nmax_parallel = 1\n'
+                                  '[seat.w]\nrole = "roles/w.md"\nadapter = "stub"\nwrite = ["src/**"]\n'
+                                  'network = ["allowed.test"]\n')
+            with open(os.path.join(fl_prog_sn, "charter.toml"), "w") as f:
+                f.write('schema = 1\nname = "st"\n\n[reach]\nprofile = "closed"\n'
+                        'allow = ["allowed.test"]\n')
+            fl_rd_sn, _, _ = _world(home, "fl-net-ad-run", {"src/a.py": "v=1\n"})
+            ad_sn = build_attempt(fl_rd_sn, "w", ["src/**"], "integration/R", "fl-net-1", "r1",
+                                  fl_prog_sn, ["w"])
+            pol_sn = os.path.join(ad_sn, "egress", "policy")   # names this turn's proxy and no other
+            os.makedirs(os.path.join(ad_sn, "compiled"), exist_ok=True)
+            with open(os.path.join(ad_sn, "repo", "egress_probe.py"), "w") as f:
+                f.write("import os, socket\n"
+                        "s = socket.create_connection(('127.0.0.1', 3129), 10)\n"
+                        "s.sendall(b'CONNECT outside.test:443 HTTP/1.1\\r\\nHost: outside.test:443\\r\\n\\r\\n')\n"
+                        "head = s.recv(200).decode('ascii', 'replace')\n"
+                        "open('/w/out/egress.txt', 'w').write('status=%s proxy=%s noproxy=%s' % (\n"
+                        "    head.split(' ')[1] if ' ' in head else head.strip(),\n"
+                        "    os.environ.get('HTTPS_PROXY'), os.environ.get('NO_PROXY')))\n")
+            with open(os.path.join(ad_sn, "stub.toml"), "w") as f:
+                f.write('schema = 2\nname = "stub"\nversion_tested = "0"\n'
+                        'argv = ["python3", "-I", "/w/repo/egress_probe.py"]\n')
+            os.environ.update({"OPERATOR_ADAPTERS": ad_sn,
+                               "OPERATOR_BROKER": os.path.join(rd, "broker-test.sock"),
+                               "OPERATOR_CREDENTIAL": "fixture-key"})
+            with contextlib_redirect():
+                cmd_adapter(ad_sn, 120)
+            epath = os.path.join(ad_sn, "out", "egress.txt")
+            etxt = open(epath).read() if os.path.exists(epath) else ""
+            check("status=403 proxy=http://127.0.0.1:3129 noproxy=127.0.0.1,localhost" == etxt.strip(),
+                  f"S-net (adapter) the jail's egress face refuses a host outside the charter: {etxt!r}")
+            elog = os.path.join(ad_sn, "egress", "egress.log")
+            elines = open(elog, encoding="ascii").read() if os.path.exists(elog) else ""
+            check("refused outside.test:443" in elines, f"S-net (adapter) the refusal is logged: {elines!r}")
+            alive = subprocess.run(["pgrep", "-f", f"serve .* {re.escape(pol_sn)}"],
+                                   capture_output=True, text=True).stdout.split()
+            check(not alive, f"S-net (adapter) the turn's proxy is gone with the turn: pids {alive}")
+        finally:
+            for k, v in old_sn.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+            if ad_sn:
+                _mutant_leftovers(ad_sn)
+            if ad_sn:
+                shutil.rmtree(ad_sn, ignore_errors=True)
 
         # B the stream law: /proc writes land in the transcript, nowhere else
         worker(a, ["/bin/sh", "-c",

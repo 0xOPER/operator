@@ -476,6 +476,14 @@ def cmd_validate(prog, waivers):
             for g in demands:
                 if g not in (classes or []):
                     findings.append(f"seat {sname}: {g} is outside adapter {seat['adapter']!r}'s tested range")
+        if seat.get("network"):
+            # the charter bounds every seat's reach (docs/charter.md): a host it
+            # doesn't cover refuses here, where the author is looking
+            import reach as reach_mod
+            try:
+                reach_mod.check_grant(prog, seat["network"])
+            except reach_mod.Finding as e:
+                findings.append(f"seat {sname}: {e}")
         for k in INERT_KEYS:
             if seat.get(k):
                 notes.append(f"inert: seat {sname}.{k} is shape-checked only this wave; it grants nothing until its chunk lands")
@@ -699,8 +707,25 @@ human = true
     ro2 = BASE.replace('adapter = "claude-code"\n[seat.rev]', 'adapter = "claude-code"\nread = ["docs"]\nnetwork = ["pypi.org"]\n[seat.rev]', 1)
     d = prog(ro2, roles=("worker.md", "reviewer.md"))
     os.makedirs(os.path.join(d, "docs"), exist_ok=True)
+    with open(os.path.join(d, "charter.toml"), "w") as f:
+        f.write('schema = 1\nname = "st"\n[reach]\nprofile = "dev"\n')   # the charter covers the grant
     r = run_(d, env=with_manifests(*ALL))
     check(r.returncode == 0 and "needs-waiver rule-of-two" in r.stdout, f"F rule of two: {r.stdout}")
+    # F-net the charter bounds a seat's reach: a host outside it refuses by name
+    for hosts, why in ((['outside.test'], "outside the charter's reach"), (["*"], "closed")):
+        netx = BASE.replace('adapter = "claude-code"\n[seat.rev]',
+                            f'adapter = "claude-code"\nnetwork = {hosts}\n[seat.rev]', 1)
+        d = prog(netx, roles=("worker.md", "reviewer.md"))
+        r = run_(d, env=with_manifests(*ALL))
+        check(r.returncode == 1 and "seat worker: network" in r.stderr and why in r.stderr,
+              f"F-net a grant beyond the charter refuses ({hosts}): {r.stderr[:160]}")
+    netx = BASE.replace('adapter = "claude-code"\n[seat.rev]',
+                        'adapter = "claude-code"\nnetwork = ["*"]\n[seat.rev]', 1)
+    d = prog(netx, roles=("worker.md", "reviewer.md"))
+    with open(os.path.join(d, "charter.toml"), "w") as f:
+        f.write('schema = 1\nname = "st"\n[reach]\nprofile = "dev"\n')
+    r = run_(d, env=with_manifests(*ALL))
+    check(r.returncode == 0, f"F-net `*` under an open profile validates: {r.stdout}{r.stderr}")
     # F1b `see` is shape-checked as visibility naming: good passes with NO
     # demand on the adapter's tested classes, a bad shape refuses
     ok_see = BASE.replace('adapter = "claude-code"\n[seat.rev]',
