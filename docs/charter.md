@@ -71,7 +71,7 @@ identity is computed, never authored.
 | `name` | the charter's name, `[a-z0-9][a-z0-9._-]{0,63}` | built |
 | `[standing]` | `not_after`. A charter is standing: one signature covers many runs until it expires | today's arm ruling (`--not-after`) |
 | `[purse]` | ceilings: `usd`, `minutes`, `context`, `concurrency`. Ceilings only; allocation is the manager's | M4; until then `team.toml` budgets are the ceilings |
-| `[reach]` | the network policy (section 5) | M2 |
+| `[reach]` | the network policy, and the host directories a seat may read (`read`, section 5) | built (M2) |
 | `[evidence]` | mutation floor, review law (section 8) | M3 |
 | `[reserved]` | questions the owner adds to the reserved list | M4 |
 | `[[environment.<name>]]` | signed environment specs (section 4) | built |
@@ -201,19 +201,47 @@ adapter that can. The `declared` rule is built: `operator reach allow <dir>
 open one host on 443 for a seat that already holds a network grant, for
 `declared_ttl` seconds while fewer than `declared_max` are live, never a
 denied host; every one is a row in the call log, and it rides the seat's next
-turn. Open: `read` (neither the plan nor this charter says yet what it
-reaches), and the writable clone. Not buildable as the
+turn. Open: the writable clone. Not buildable as the
 plan first wrote it: "egress bodies" —
 an HTTPS tunnel's body is encrypted, and the broker's request bodies are the
 worker's own prompts, where key-shaped strings are often honest fixtures.
 
+`read` is built (M2). It reaches host directories, bound read-only at their
+own path in the seat's jail. Signed, then granted: the charter lists the
+directories a program may read (`[reach].read`), a seat's `read` names one of
+them or a directory inside it, and `team validate` refuses anything else by
+name. Every path meets the environment's mount law and a stricter one: no
+link anywhere on the path; never `/`, a system path, a container socket, the
+engine's own tree, its state (so never a run directory) or the program, nor
+anything at or above them; never a credential or SSH directory; never a home
+directory or anything above one, and never inside another user's. The path
+rides the attempt's metadata. The threat: a prompt-injected worker that can
+read a host directory and talk to the network can exfiltrate it. So beside a
+network grant a read grant needs the signed `rule-of-two` waiver on the arm
+ruling, and the jail is not built without it (`team validate` only named the
+waiver before; no door asked for it). `read` is in the `tested_classes` of
+`claude-code`, `codex` and `opencode`, each with a `read-allowed`
+conformance cell CI runs at the pins: the seat reads inside its directory,
+and the directory above, a sibling, `..` and a link pointing out are
+unreachable. The older seat key `ro` binds host paths the same way on the
+team's signature alone: no charter, no waiver. It is not `read`, and it is
+not closed.
+
 A worker's `.git` is bound read-only today, which rules out worktree fan-out. A
-seat that needs fan-out gets a real writable clone only when a conformance
-cell proves that a hook planted there never runs host-side.
-`test/planted-hook-walk.sh` is that proof's standing leg: it plants what a
-writable clone could plant, runs the real delivery chain, and checks that
-nothing fired on the host. A control shows the plants are live, and a sabotage
-mode shows the walk can fail.
+seat that needs fan-out gets a real writable clone only when a conformance cell
+proves that a hook planted there never runs host-side.
+`test/planted-hook-walk.sh` is the standing leg of that proof: it plants what a
+writable clone could plant, runs the real delivery chain (seal, gate, collect,
+candidate), and checks that nothing fired on the host. A control shows the
+plants are live, and a sabotage mode shows the walk can fail. The clone is not
+built, and the proof is not whole: the walk covers the delivery chain, and the
+engine has one git call inside an attempt outside it. `adapter_prepare`
+(`bin/spawn.py`) asks the attempt's own repository, on the host, whether the
+adapter's config file is tracked, whenever an attempt is driven again; a
+`core.fsmonitor` planted in that repository's config runs there (measured).
+Nothing reaches it today, because `.git` is read-only in the jail and every
+turn builds a fresh attempt. It is the first thing a writable clone would
+open, so it closes before the clone is built.
 
 ## 6. The manager
 
@@ -348,7 +376,9 @@ The rest of this section is M3, not built.
 ## 9. Default charters
 
 Four profiles share one schema. The purse is never defaulted: each example
-shows a number that is its owner's.
+shows a number that is its owner's. None declares a read path: a host
+directory a seat may read (`[reach].read`, section 5) is the owner's own
+addition to a charter.
 
 ### `dev`
 
@@ -413,6 +443,7 @@ control is removed.
 |---|---|---|
 | credential broker | a prompt-injected worker exfiltrates the key | the canary walk, the topology drill, the broker selftest |
 | jail and git-object write gate | host damage, out-of-grant writes, symlink and hook smuggling | the conformance cells, the import gate arms |
+| the read class: the charter's list, the path law, and the `rule-of-two` waiver, all held again where the jail is built | a prompt-injected worker exfiltrates a host directory beside a network grant, or reads the engine's own tree, a credential directory or a home | the read arms of the environment, reach, team and spawn selftests (20 neuter rows), the `read-allowed` cell |
 | sealed oracle, runner-config seal, `pytest-guard` | test tampering, fake green | the hollow battery, the sealed probes |
 | dual gate with provenanced verdicts | forged or stale review | the review suite's forgery arms |
 | ledger that always settles | budget evasion | the settle arms |
@@ -452,7 +483,7 @@ each row by delegation.
 |---|---|---|---|
 | M0 | Charter law | the signed plan | this document |
 | M1 | Environments | container and GPU work | built: the charter, the door, `env` rows, the worker socket, a fingerprint of the work directory in every receipt. The exit is the parked program's two rows closing as machine rows |
-| M2 | Reach | network, shell, read | built: a seat's network from the charter, through the egress proxy; a credential shape refused on the wire; `shell` on the three adapters, the jail the law; the `declared` rule and the operator's `net.allow`, its brief naming the hosts the charter refused. Open: `read` (no text says what it reaches), and the writable clone |
+| M2 | Reach | network, shell, read | built: a seat's network from the charter, through the egress proxy; a credential shape refused on the wire; `shell` on the three adapters, the jail the law; `read`: host directories the charter lists, bound read-only at their own path, with the signed `rule-of-two` waiver beside `network`; the `declared` rule and the operator's `net.allow`, its brief naming the hosts the charter refused. Open: the writable clone (not built; its proof has a gap, section 5) |
 | M3 | Evidence | contract authoring as a precondition | first slice built: `operator derive`. Open: the hollow twin and the `reviewed-only` label, the lint against existence-class anchors, `min_mutation_kill`, the evidence mix, the templates |
 | M4 | The manager | triage seat becomes executive | open |
 | M5 | Enclose | external orchestrators as workers or managers | open, gated on probes |
