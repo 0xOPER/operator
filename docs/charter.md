@@ -139,10 +139,10 @@ Rules (`bin/environment.py`, built):
 Rows gain `env = "<name>"`. A `run` row with an environment executes its check
 there, with the candidate export and the pinned oracle mounted.
 
-One door serves three callers: a row's check (built), the manager's `env.run`
-verb (M4), and the worker itself (next slice). A worker's jail will get an
-environment socket served by the engine, so a worker can iterate against the
-real environment mid-task without ever holding the daemon. Every call is validated the same way, logged the same
+One door serves three callers: a row's check (built), the worker itself (built:
+a seat with `env = ["tests"]` gets an environment socket in its jail, served by
+the engine, so a worker can iterate against the real environment mid-task
+without ever holding the daemon), and the manager's `env.run` verb (M4). Every call is validated the same way, logged the same
 way and capped by the seat's purse. A seat names the environments it may call
 with `env = ["tests"]`; the container sees only what the worker stages into its
 work directory, never the worker's repository.
@@ -415,7 +415,7 @@ each row by delegation.
 | # | Milestone | Un-rails | Status |
 |---|---|---|---|
 | M0 | Charter law | the signed plan | this document |
-| M1 | Environments | container and GPU work | first slice built: the charter, the door, `env` rows. The worker socket is next |
+| M1 | Environments | container and GPU work | built: the charter, the door, `env` rows, the worker socket. The exit is the parked program's two rows closing as machine rows |
 | M2 | Reach | network, shell, read | open |
 | M3 | Evidence | contract authoring as a precondition | open |
 | M4 | The manager | triage seat becomes executive | open |

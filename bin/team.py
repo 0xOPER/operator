@@ -36,7 +36,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCHEMA = 1
 TOP_KEYS = {"schema", "name", "contract", "autonomy", "max_parallel", "budget", "seat", "mcp"}
 SEAT_KEYS = {"role", "adapter", "human", "write", "read", "see", "network", "shell", "mcp",
-             "memory", "skills", "budget", "model", "repo_context", "gpu", "ro"}
+             "memory", "skills", "budget", "model", "repo_context", "gpu", "ro", "env"}
 GRANT_KEYS = {"write", "read", "network", "shell", "mcp", "model"}
 INERT_KEYS = ("memory", "skills", "mcp")
 AUTONOMY = ("attended", "unattended")
@@ -188,6 +188,13 @@ def load(prog):
                     raise Finding(f"seat {sname}: see {v!r} must be a repo-relative path glob")
         if "repo_context" in seat and seat["repo_context"] not in ("hide", "load"):
             raise Finding(f"seat {sname}: repo_context is hide or load")
+        if "env" in seat:
+            # the environments this seat may call through its jail's socket
+            # (bin/environment.py Door); each one is declared in the charter
+            ev = seat["env"]
+            if not isinstance(ev, list) or not all(isinstance(v, str) and NAME_RE.fullmatch(v) for v in ev):
+                raise Finding(f"seat {sname}: env must be a list of environment names, "
+                              "[a-z0-9][a-z0-9._-]{0,63}")
         if "gpu" in seat and not isinstance(seat["gpu"], bool):
             raise Finding(f"seat {sname}: gpu is true or absent")
         if "ro" in seat:
@@ -247,6 +254,13 @@ def load(prog):
                 if not os.path.isdir(os.path.join(prog, sk)):
                     raise Finding(f"seat {sname}: skill {sk!r} doesn't exist")
         check_budget(seat.get("budget", {}), f"seat {sname}")
+    # a seat's environments are declared ones: the charter the owner signs names them
+    declared = _charter_environments(prog)
+    for sname, seat in seats.items():
+        for n in seat.get("env") or []:
+            if n not in declared:
+                raise Finding(f"seat {sname}: env names {n!r}, which charter.toml doesn't "
+                              f"declare; declare [[environment.{n}]] (docs/charter.md), or drop it")
 
     cname = doc.get("contract", "contract.toml")
     if not PATH_OK.fullmatch(cname) or ".." in cname.split("/"):
@@ -281,9 +295,27 @@ def load(prog):
     return doc, seats, contract
 
 
+def _charter_environments(prog):
+    """The environments the program's charter signs; {} without one."""
+    if not os.path.isfile(os.path.join(prog, "charter.toml")):
+        return {}
+    import environment as env_mod
+    try:
+        return env_mod.specs(prog)
+    except env_mod.Finding as e:
+        raise Finding(str(e))
+
+
 def check_budget(b, where):
     if not isinstance(b, dict):
         raise Finding(f"{where} budget must be a table")
+    # the minutes a seat may spend inside its environments; the other budget
+    # keys are checked below, by their own law
+    if "env_minutes" in b and (not isinstance(b["env_minutes"], (int, float))
+                               or isinstance(b["env_minutes"], bool)
+                               or not (0 <= b["env_minutes"] < float("inf"))):
+        raise Finding(f"{where} budget env_minutes must be a non-negative number")
+    b = {k: v for k, v in b.items() if k != "env_minutes"}
     for k in b:
         if k not in ("usd", "minutes", "context"):
             raise Finding(f"{where} budget has unknown key {k!r}")
@@ -754,6 +786,37 @@ human = true
         print("skipped: F1c crown leg (no legal writable dir on this host)")
     import shutil as _sh1c
     _sh1c.rmtree(_ro_dir, ignore_errors=True)
+    # F1d a seat's environments: a list of names, each one declared in the
+    # charter the owner signs; env_minutes is what the seat may spend inside them
+    def env_team(extra, budget=""):
+        return BASE.replace('adapter = "claude-code"\n[seat.rev]',
+                            f'adapter = "claude-code"\n{extra}\n{budget}\n[seat.rev]', 1)
+
+    st_charer = ('schema = 1\nname = "st"\n\n[[environment.tests]]\n'
+                 'image = "sha256:' + "b" * 64 + '"\nruntime = "docker"\nuser = "1000:1000"\n'
+                 '\n  [environment.tests.limits]\n  memory = "64m"\n  cpus = 1\n  pids = 16\n  wall = 300\n')
+    for badenv, why in [
+        ('env = "tests"', "must be a list of environment names"),
+        ('env = ["Tests"]', "must be a list of environment names"),
+        ('env = ["tests"]', "which charter.toml doesn't declare"),
+    ]:
+        d = prog(env_team(badenv), roles=("worker.md", "reviewer.md"))
+        r = run_(d, env=with_manifests("write"))
+        check(r.returncode == 1 and why in r.stderr,
+              f"F1d {why} refuses: rc={r.returncode} {r.stderr[:90]}")
+    d = prog(env_team('env = ["tests"]', "[seat.worker.budget]\nenv_minutes = -1"),
+             roles=("worker.md", "reviewer.md"))
+    with open(os.path.join(d, "charter.toml"), "w") as f:
+        f.write(st_charer)
+    r = run_(d, env=with_manifests("write"))
+    check(r.returncode == 1 and "env_minutes must be a non-negative number" in r.stderr,
+          f"F1d a negative env_minutes refuses: rc={r.returncode} {r.stderr[:90]}")
+    d = prog(env_team('env = ["tests"]', "[seat.worker.budget]\nenv_minutes = 5"),
+             roles=("worker.md", "reviewer.md"))
+    with open(os.path.join(d, "charter.toml"), "w") as f:
+        f.write(st_charer)
+    r = run_(d, env=with_manifests("write"))
+    check(r.returncode == 0, f"F1d a declared environment and its budget validate: rc={r.returncode} {r.stderr[:100]}")
     # F2 a mixed reviewed/unreviewed writing seat waives, never refuses
     mixed = (rows_doc() + '[[row]]\nid = "b"\nstage = "s"\ndesc = "d"\nkind = "run"\n'
              'seat = "worker"\ncmd = "true"\n')

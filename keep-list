@@ -41,6 +41,7 @@ bin/environment.py
 bin/fixtures.py
 bin/init.py
 bin/lib/jail.py
+bin/lib/op-env.py
 bin/lib/paths
 bin/lib/pytest-guard.py
 bin/lib/run-adapter.sh

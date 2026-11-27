@@ -24,6 +24,7 @@ gpu = true                          # the nvidia devices ride this seat's jails
 ro = ["/data/models"]               # read-only host paths (the model tree): mounted
                                     # at their own paths; never on a jail-owned
                                     # mount, never the engine's own tree or state
+env = ["tests"]                     # environments this seat may call in its jail (charter.toml)
 
 [seat.writer.budget]
 usd = 6.0                           # reservations settle against this, ALWAYS
@@ -50,7 +51,7 @@ Shipped templates default to `adapter = "stub"` and omit `[seat.op]`. Starting a
 
 Every seat key: `role`, `adapter`, `human`, `write`, `read`, `see`, `network`,
 `shell`, `mcp`, `memory`, `skills`, `budget`, `model`, `repo_context`, `gpu`,
-`ro`. The team file also takes top-level `schema`, `name`, `contract`,
+`ro`, `env`. The team file also takes top-level `schema`, `name`, `contract`,
 `autonomy`, `max_parallel`, `budget`, and `mcp`; the shipped templates are the
 working examples (copy them via `bin/operator.sh init` rather than editing
 `profiles/templates/` in place, which dirties the engine repo and causes
@@ -85,8 +86,28 @@ waits on the approvals screen until it does.
   repo text to the worker, and grants no writes (the gate gates on `write`).
 - **budget** -- accepts `usd` (team or seat ceiling; reservations settle against
   it, priced from `broker.py`'s built-in rate table), `minutes` (wall-clock
-  ceiling), and `context` (input-token budget that gates the next reservation).
+  ceiling), `context` (input-token budget that gates the next reservation), and
+  `env_minutes` (what a seat may spend inside its environments).
   Spawn reserves `min(seat, team, usd/(max_rework+1))`.
+- **env** -- the environments this seat may call in its jail, each one declared
+  in `charter.toml` (see the door below).
+
+### The environment door (`env`)
+
+A seat with `env = ["tests"]` may run commands inside the environments the
+program's `charter.toml` signs (`docs/charter.md`). Its jail gets a socket
+served by the engine, and the brief says how to use it:
+
+```sh
+python3 -I /engine/op-env.py --env tests -- <cmd...>
+```
+
+Stage what the command needs under `/w/envwork`; it is `/work` inside the
+environment. The engine launches the run through the only container door,
+verifies the arm ruling first and files a hash-chained receipt; the command's
+output comes back and its exit code is the client's. Everything else is the
+signed spec's. One request runs at a time. The door opens with the seat's turn
+and closes with it: a run in flight is killed.
 
 ### Waivers & ruling bindings
 

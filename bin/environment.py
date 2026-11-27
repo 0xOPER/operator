@@ -20,6 +20,10 @@ argv hash, exit code, duration, runtime. A contract row with env = "<name>"
 runs its check through the same door, with the pinned oracle and runner
 configs mounted read-only over the export exactly as the jail binds them.
 
+A seat with env = ["<name>"] gets the door inside its jail as a socket
+(Door here, bin/lib/op-env.py there): the engine serves it, one request at a
+time, grants and budget checked on this side. The turn's end is the run's end.
+
 usage: environment.py validate <program-dir> [--json]
        environment.py run <program-dir> --env NAME [--work DIR] [--timeout S] [--json] -- <cmd...>
        environment.py --selftest | --first-level
@@ -35,9 +39,11 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import tomllib
 
@@ -81,6 +87,13 @@ LOG_MAX = "4m"            # the daemon's log rotation: a printing runaway costs 
 POLL = 0.25
 KILL_GRACE = 30           # seconds a killed run gets to die before the door gives up on it
 FAKE = os.path.join(ROOT, "test", "lib", "fake-container.py")
+# the worker's door: the environment socket a jail may carry when its seat holds env grants
+ENV_SOCK = "/op-envd.sock"        # the socket inside the jail
+ENV_WORK = "/w/envwork"           # the seat's staged directory in the jail; /work inside the environment
+ENV_CLIENT = "/engine/op-env.py"  # the jailed client (bin/lib/op-env.py), read-only
+DOOR_OUT = 16 * 1024              # what one answer carries back to the jail
+DOOR_IN = 512 * 1024              # the largest request the door reads
+MAX_ARGS, MAX_ARG = 64, 4096
 
 
 class Void(Exception):
@@ -436,11 +449,14 @@ def _binds_ok(src, dst, mode):
 
 
 def run_env(prog, name, work, cmd, envs=(), mounts=(), cwd=None, timeout=None,
-            cap=LOG_CAP, check=True, work_mount=True):
+            cap=LOG_CAP, check=True, work_mount=True, abort=None):
     """One run in a signed environment. `work` is the caller's directory, writable
     at /work. `mounts` are (src, dst, mode) binds for a contract row's export and
-    its read-only overlays. Returns (rc, out, meta)."""
+    its read-only overlays. `abort` is an Event: set, it ends the run (rc 125).
+    Returns (rc, out, meta)."""
     spec = environment(prog, name)
+    if abort is not None and abort.is_set():
+        raise Refused("the turn that asked for this run is over")
     if check:
         require_signed(prog)
     if not cmd or not all(isinstance(c, str) and "\x00" not in c for c in cmd):
@@ -484,7 +500,7 @@ def run_env(prog, name, work, cmd, envs=(), mounts=(), cwd=None, timeout=None,
     r = sh(argv)
     if r.returncode != 0:
         raise Void(f"{spec['runtime']} run refused: {(r.stderr or r.stdout).strip()[:300]}")
-    timed_out, oom, gave_up, rc, out = False, False, False, None, b""
+    timed_out, aborted, oom, gave_up, rc, out = False, False, False, False, None, b""
     floor = int(os.environ.get("OPERATOR_DISK_FLOOR") or 512 * 1024 * 1024)
     try:
         while rc is None:
@@ -493,6 +509,9 @@ def run_env(prog, name, work, cmd, envs=(), mounts=(), cwd=None, timeout=None,
             if st.returncode == 0 and len(parts) == 3 and parts[0] != "running":
                 rc, oom = int(parts[1]), parts[2] == "true"
                 break
+            if abort is not None and abort.is_set() and not aborted:
+                aborted = True
+                sh([cli, "kill", cname])
             left = time.monotonic() - t0
             if left > limit or shutil.disk_usage(work).free < floor:
                 if not timed_out:
@@ -511,10 +530,12 @@ def run_env(prog, name, work, cmd, envs=(), mounts=(), cwd=None, timeout=None,
         sh([cli, "rm", "-f", cname])
     if timed_out:
         rc = 124
+    if aborted:
+        rc = 125
     meta = {"env": name, "image": DIGEST_RE.fullmatch(spec["image"]).group(1)[:16],
             "argv": hashlib.sha256(b"\0".join(c.encode("utf-8") for c in cmd)).hexdigest()[:16],
             "rc": rc, "secs": round(time.monotonic() - t0, 3), "runtime": spec["runtime"],
-            "oom": oom, "timed_out": timed_out}
+            "oom": oom, "timed_out": timed_out, "aborted": aborted}
     return rc, out, meta
 
 
@@ -533,9 +554,10 @@ def receipt(name, meta, runfile):
     return r.stdout.strip()
 
 
-def run_recorded(prog, name, work, cmd, envs=(), mounts=(), cwd=None, timeout=None):
+def run_recorded(prog, name, work, cmd, envs=(), mounts=(), cwd=None, timeout=None,
+                 cap=LOG_CAP, abort=None):
     """run_env plus its receipt. Returns (rc, out, meta, call_id)."""
-    rc, out, meta = run_env(prog, name, work, cmd, envs, mounts, cwd, timeout)
+    rc, out, meta = run_env(prog, name, work, cmd, envs, mounts, cwd, timeout, cap, True, True, abort)
     fd, runfile = tempfile.mkstemp(prefix="envrun.")
     try:
         with os.fdopen(fd, "wb") as f:
@@ -568,6 +590,145 @@ def run_check_env(prog, name, export, overlays, cmd, envs, timeout, cap=LOG_CAP)
                        work_mount=False)
     finally:
         shutil.rmtree(out, ignore_errors=True)
+
+
+# --- the worker's door: the environment socket a jail may carry --------------------------
+
+
+class Door:
+    """The engine's side of a worker's environment socket. One thread, one
+    request at a time: a jailed seat asks with an environment name, a command
+    and an optional timeout; everything else stays the door's. The arm ruling
+    is verified on every run, the seat's grants and budget bound it, and the
+    turn's end is the door's end: a run in flight is killed, nothing new runs."""
+
+    def __init__(self, attempt, prog, grants, budget_secs=None):
+        self.dir = os.path.join(attempt, "envd")
+        self.work = os.path.join(self.dir, "work")
+        self.record = os.path.join(self.dir, "sock")   # where the socket is, for the jail's binds
+        self.sock = None
+        self._room = None
+        self.prog = prog
+        self.grants = sorted(set(grants or ()))
+        self.budget_secs = budget_secs
+        self.abort = threading.Event()
+        self.used = 0.0
+        self._srv = None
+        self._thread = None
+
+    def start(self):
+        os.makedirs(self.work, mode=0o700, exist_ok=True)
+        # an AF_UNIX path is capped at 108 bytes and an attempt's path is not
+        # the engine's to shorten: the socket lives in a short private directory
+        short = min((c for c in ("/tmp", tempfile.gettempdir())
+                     if os.path.isdir(c) and os.access(c, os.W_OK)), key=len)
+        self._room = tempfile.mkdtemp(prefix="op-envd-", dir=short)
+        self.sock = os.path.join(self._room, "s.sock")
+        self._srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self._srv.bind(self.sock)
+        os.chmod(self.sock, 0o600)
+        with open(self.record, "w", encoding="utf-8") as f:
+            f.write(self.sock + "\n")
+        self._srv.listen(8)
+        self._thread = threading.Thread(target=self._serve, daemon=True, name="environment-door")
+        self._thread.start()
+        return self
+
+    def close(self):
+        """The turn is over: no new request is served and a run in flight is killed."""
+        self.abort.set()
+        srv, self._srv = self._srv, None
+        if srv is not None:
+            try:
+                srv.close()
+            except OSError:
+                pass
+        if self._thread is not None:
+            self._thread.join(timeout=KILL_GRACE + 15)
+        if self._room is not None:
+            shutil.rmtree(self._room, ignore_errors=True)
+
+    def _serve(self):
+        while not self.abort.is_set():
+            try:
+                conn, _ = self._srv.accept()
+            except OSError:
+                break
+            with conn:
+                data = b""
+                try:
+                    while len(data) <= DOOR_IN:
+                        chunk = conn.recv(65536)
+                        if not chunk:
+                            break
+                        data += chunk
+                except OSError:
+                    data = b""
+                try:
+                    req = json.loads(data.decode("utf-8") or b"null")
+                except (ValueError, UnicodeDecodeError):
+                    req = None
+                try:
+                    conn.sendall(json.dumps(self._handle(req), sort_keys=True).encode("utf-8") + b"\n")
+                except OSError:
+                    pass
+
+    @staticmethod
+    def _refuse(why, fix):
+        return {"rc": None, "refused": f"{why}. {fix}"}
+
+    def _handle(self, req):
+        if self.abort.is_set():
+            return self._refuse("the turn is over", "the door closes with its turn")
+        if not isinstance(req, dict):
+            return self._refuse("a request is one JSON object: env, argv and an optional timeout",
+                                "python3 -I /engine/op-env.py --env NAME -- <cmd...>")
+        name = req.get("env")
+        if not isinstance(name, str) or name not in self.grants:
+            return self._refuse(f"environment {name!r} isn't granted to this seat",
+                                f"granted here: {', '.join(self.grants) or 'none'}; a grant is the "
+                                "seat's env in team.toml, which the owner signs")
+        cmd = req.get("argv")
+        if not isinstance(cmd, list) or not cmd or len(cmd) > MAX_ARGS \
+                or not all(isinstance(c, str) and c and "\x00" not in c and len(c) <= MAX_ARG
+                           for c in cmd):
+            return self._refuse("argv must be a non-empty list of strings",
+                                f"at most {MAX_ARGS} arguments of {MAX_ARG} bytes each")
+        t = req.get("timeout")
+        if t is not None and not (_number(t) and 0 < t <= 86400):
+            return self._refuse("timeout is a number of seconds, at most a day",
+                                "drop it to run for the environment's wall")
+        if self.budget_secs is not None:
+            left = self.budget_secs - self.used
+            if left <= 0:
+                return self._refuse("this seat's environment budget is spent",
+                                    f"{self.budget_secs / 60:g} minutes were granted (env_minutes in "
+                                    "team.toml); the owner raises it")
+            t = left if t is None else min(t, left)
+        try:
+            rc, out, meta, cid = run_recorded(self.prog, name, self.work, cmd, timeout=t,
+                                              cap=DOOR_OUT, abort=self.abort)
+        except Locked as e:
+            return {"rc": None, "void": str(e)}
+        except (Refused, Finding) as e:
+            return {"rc": None, "refused": str(e)}
+        except Void as e:
+            return {"rc": None, "void": str(e)}
+        self.used += float(meta["secs"])
+        return {"rc": rc, "out": out.decode("utf-8", "replace"), "secs": meta["secs"],
+                "env": name, "image": meta["image"], "receipt": cid,
+                "aborted": meta.get("aborted", False)}
+
+
+def door_binds(attempt):
+    """The jail's binds for a seat's environment socket. The socket exists only
+    once Door.start() has run, so a jail is built only after its door."""
+    envd = os.path.join(attempt, "envd")
+    with open(os.path.join(envd, "sock"), encoding="utf-8") as f:
+        sock = f.read().strip()
+    return ["--bind", os.path.join(envd, "work"), ENV_WORK,
+            "--bind", sock, ENV_SOCK,
+            "--ro-bind", os.path.join(ROOT, "bin", "lib", "op-env.py"), ENV_CLIENT]
 
 
 # --- the front door ---------------------------------------------------------------------
@@ -1005,6 +1166,99 @@ def selftest():
                  if len(ln.split("\t")) == 10 and ln.split("\t")[2] == "check:e1"]
         check(krows and krows[-1].get("env") == "t" and krows[-1].get("image") == "a" * 16,
               f"E2b the check's receipt names its environment and image: {krows[-1] if krows else None}")
+        # F the worker's door: the socket a jail carries. bin/lib/op-env.py is
+        # the client, run here as a process against the served socket
+        adir_f = spawn_mod.build_attempt(e_rd, "w", ["src/**"], "integration/R", "a-door", "t1",
+                                         prog, ["w"])
+        client = os.path.join(ROOT, "bin", "lib", "op-env.py")
+
+        def ask(sock_path, *args):
+            return subprocess.run([sys.executable, "-I", client, *args], capture_output=True,
+                                  text=True, stdin=subprocess.DEVNULL, timeout=240,
+                                  env={**os.environ, "OPERATOR_ENV_SOCKET": sock_path})
+
+        door = Door(adir_f, prog, ["t"]).start()
+        check(os.path.exists(door.sock) and os.path.isdir(door.work),
+              "F0 the door starts with its socket and the seat's staged directory")
+        a = ask(door.sock, "--env", "t", "--", "sh", "-c", "echo from-door; pwd")
+        check(a.returncode == 0 and a.stdout.startswith("from-door\n")
+              and a.stdout.strip().endswith("/work") and "receipt=" in a.stderr,
+              f"F1 a jailed client runs a command through the door: rc={a.returncode} out={a.stdout!r} "
+              f"err={a.stderr[-160:]!r}")
+        write(os.path.join(door.work, "note.txt"), "staged\n")
+        a = ask(door.sock, "--env", "t", "--", "sh", "-c", "cat note.txt")
+        check(a.returncode == 0 and a.stdout == "staged\n",
+              f"F2 what the seat stages under /w/envwork is /work inside: {a.stdout!r}")
+        a = ask(door.sock, "--env", "nope", "--", "true")
+        check(a.returncode == 1 and "isn't granted to this seat" in a.stderr,
+              f"F3 an environment not granted to the seat refuses by name: {a.stderr[-120:]!r}")
+        a = ask(door.sock, "--env", "t", "--")
+        check(a.returncode == 2, "F3b an empty command is a bad ask")
+
+        def raw(sock_path, obj):
+            """Asks the door without the client, so the door's own laws are what answer."""
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.settimeout(120)
+            s.connect(sock_path)
+            s.sendall(json.dumps(obj).encode("utf-8"))
+            s.shutdown(socket.SHUT_WR)
+            data = b""
+            while True:
+                chunk = s.recv(65536)
+                if not chunk:
+                    break
+                data += chunk
+            s.close()
+            return json.loads(data.decode("utf-8"))
+        a = ask(door.sock, "--env", "t", "--timeout", "x", "--", "true")
+        check(a.returncode == 2, "F3c a timeout that isn't seconds is a bad ask")
+        r1 = raw(door.sock, {"env": "t", "argv": []})
+        r2 = raw(door.sock, {"env": "t", "argv": ["true", 7]})
+        r3 = raw(door.sock, {"env": "t", "argv": ["true"] * (MAX_ARGS + 1)})
+        check(all("refused" in r and "argv must be" in r["refused"] for r in (r1, r2, r3)),
+              f"F3e the door refuses an empty, mixed or overlong argv by name: {[r.get('refused', r)[:40] if isinstance(r.get('refused', r), str) else r for r in (r1, r2, r3)]}")
+        a = ask(os.path.join(adir_f, "no.sock"), "--env", "t", "--", "true")
+        check(a.returncode == 2 and "no environment socket" in a.stderr,
+              "F3d a jail without the socket says so")
+        door.close()
+        a = ask(door.sock, "--env", "t", "--", "true")
+        check(a.returncode == 2, "F4 the door's socket goes with the turn")
+        # F5 the seat's budget: spent is refused, and a run is cut to what is left
+        door_b = Door(adir_f, prog, ["t"], budget_secs=0.000001).start()
+        a = ask(door_b.sock, "--env", "t", "--", "sh", "-c", "sleep 30")
+        check(a.returncode == 124, f"F5 a run is cut to the budget that is left: rc={a.returncode}")
+        a = ask(door_b.sock, "--env", "t", "--", "true")
+        check(a.returncode == 1 and "environment budget is spent" in a.stderr,
+              f"F5b a spent budget refuses by name: {a.stderr[-120:]!r}")
+        door_b.close()
+        # F6 the turn's end is a run's end: an in-flight run is killed
+        door_c = Door(adir_f, prog, ["t"]).start()
+        box = {}
+
+        def slow():
+            box["r"] = ask(door_c.sock, "--env", "t", "--", "sh", "-c", "sleep 40; echo late")
+
+        th = threading.Thread(target=slow)
+        th.start()
+        time.sleep(1.5)
+        t0c = time.monotonic()
+        door_c.abort.set()
+        th.join(timeout=40)
+        a = box.get("r")
+        check(a is not None and a.returncode == 125 and "aborted" in a.stderr
+              and time.monotonic() - t0c < 25,
+              f"F6 a run in flight dies with the turn: rc={getattr(a, 'returncode', None)} "
+              f"err={getattr(a, 'stderr', '')[-120:]!r}")
+        door_c.close()
+        # F7 the door verifies the ruling on every run: an edited environment is
+        # an unsigned program, whichever way it is asked for
+        write(cpath, charter_text(limits=LIMITS.replace('"64m"', '"32m"')))
+        door_d = Door(adir_f, prog, ["t"]).start()
+        a = ask(door_d.sock, "--env", "t", "--", "true")
+        check(a.returncode == 1 and "not signed" in a.stderr,
+              f"F7 an edited environment refuses at the door: {a.stderr[-160:]!r}")
+        door_d.close()
+        sign()
     finally:
         for k, v in old.items():
             if v is None:
@@ -1161,6 +1415,32 @@ def first_level():
                             capture_output=True, stdin=subprocess.DEVNULL, timeout=120)
         check(r8.returncode == 0,
               f"L8 a worker-shaped jail sees no container socket: rc={r8.returncode} {r8.stderr[-200:]!r}")
+        # L9 the whole way: a jailed seat's client -> the door -> the real daemon
+        write(os.path.join(prog, "team.toml"),
+              TEAM.replace('write = ["src/**"]\n', 'write = ["src/**"]\nenv = ["t"]\n', 1))
+        sign()
+        rd9, _p9, _ = spawn_mod._world(home, "w9", {"src/a.py": "v=1\n"})
+        adir9 = spawn_mod.build_attempt(rd9, "w", ["src/**"], "integration/R", "a9", "t1", prog, ["w"])
+        write(os.path.join(adir9, "repo", "ask.py"),
+              "import subprocess, sys\n"
+              "r = subprocess.run([sys.executable, '-I', '/engine/op-env.py', '--env', 't', '--', "
+              "'/bin/busybox', 'echo', 'from-a-jailed-seat'])\n"
+              "open('/w/envwork/staged.txt', 'w').write('staged by the worker\\n')\n"
+              "r2 = subprocess.run([sys.executable, '-I', '/engine/op-env.py', '--env', 't', '--', "
+              "'/bin/busybox', 'cat', '/work/staged.txt'])\n"
+              "r3 = subprocess.run([sys.executable, '-I', '/engine/op-env.py', '--env', 'nope', '--', "
+              "'/bin/busybox', 'true'], capture_output=True, text=True)\n"
+              "print('GRANT-REFUSED' if r3.returncode == 1 and \"isn't granted\" in r3.stderr\n"
+              "      else 'GRANT-LEAK rc=%s %r' % (r3.returncode, r3.stderr[-120:]))\n"
+              "sys.exit(max(r.returncode, r2.returncode))\n")
+        with contextlib.redirect_stdout(sys.stderr):
+            spawn_mod.compose_brief(adir9)
+            spawn_mod.cmd_worker(adir9, 240, ["python3", "-I", "/w/repo/ask.py"])
+        t9 = open(os.path.join(adir9, "transcript.out"), encoding="utf-8", errors="replace").read()
+        check("from-a-jailed-seat" in t9 and "staged by the worker" in t9 and "GRANT-REFUSED" in t9,
+              f"L9 a jailed seat reached its environment through the door: {t9[-300:]!r}")
+        check(not os.path.exists(open(os.path.join(adir9, "envd", "sock")).read().strip()),
+              "L9b the turn's end closed the door")
     finally:
         sh([cli, "rmi", "-f", "op-env-selftest:local"])
         for k, v in old.items():

@@ -633,7 +633,7 @@ def build_attempt(rd, seat, grants, ref, aid, task, prog, seats):
     # walk's row -- visibility rode the write grant, so naming a tree visible
     # (a .github with a hundred files) meant widening DELIVERY. `see` names
     # paths for the checkout only; the tree check still gates on the grants.
-    see, gpu, ro = [], False, []
+    see, gpu, ro, env = [], False, [], []
     if prog:
         try:
             _, seats_doc, _ = load_team(prog)
@@ -643,6 +643,7 @@ def build_attempt(rd, seat, grants, ref, aid, task, prog, seats):
         see = list(seat_doc.get("see") or [])
         gpu = seat_doc.get("gpu") is True
         ro = [os.path.realpath(p) for p in (seat_doc.get("ro") or [])]
+        env = list(seat_doc.get("env") or [])
     visible = grants + see
     stage_info = os.path.join(stage_repo, ".git", "info")
     os.makedirs(stage_info, exist_ok=True)
@@ -668,7 +669,7 @@ def build_attempt(rd, seat, grants, ref, aid, task, prog, seats):
     meta = {"id": aid, "seat": seat, "grants": grants, "see": see, "ref": ref,
             "start": start_sha, "task": task, "prog": prog,
             "seats": [x for x in (seats or []) if x],
-            "gpu": gpu, "ro": ro,
+            "gpu": gpu, "ro": ro, "env": env,
             "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
     # a queued reply rides this attempt's mail, once: the pending note is
     # consumed here so a second reply re-pends instead of stacking silently
@@ -812,6 +813,16 @@ def compose_brief(attempt):
             pass
         if b_items:
             parts.append("# budget\n\n" + ", ".join(b_items))
+        if meta.get("env"):
+            # a seat with environments knows the door: what it may call and how
+            parts.append(
+                "# environments\n\nThis seat may run commands inside signed environments: "
+                + ", ".join(f"`{n}`" for n in meta["env"]) + ". Stage what a command needs "
+                "under `/w/envwork` (it is `/work` inside) and run "
+                "`python3 -I /engine/op-env.py --env NAME -- <cmd...>`. The engine launches "
+                "it and files a receipt, and the command's output comes back. The image, "
+                "devices, mounts, limits and network are the signed spec's.")
+
         # P18's law: skills never ride the home's skills dir (headless -p never
         # loads it -- the canary shipped 0 times). The engine copies the seat's
         # skills into the repo the worker already reads, and the brief says where.
@@ -1438,7 +1449,37 @@ def jail_binds_for(attempt, etc_dir, repo_rw=True):
     flat += seat_gpu_binds(meta)
     for r in meta.get("ro") or []:
         flat += ["--ro-bind", r, r]
+    if meta.get("env"):
+        # the seat's environment socket and its client. The socket exists only
+        # while the door is up, so a jail is built after env_door() starts.
+        import environment as env_mod
+        try:
+            flat += env_mod.door_binds(attempt)
+        except OSError:
+            raise Refused("the environment door isn't up for this attempt: it starts with "
+                          "the turn (env_door), never without it")
     return flat
+
+
+def env_door(attempt, meta):
+    """The environment socket of a seat with env grants (docs/charter.md): started
+    here, one request at a time, and closed by the caller when the turn ends.
+    None for a seat without grants. The seat's env_minutes budget bounds it."""
+    grants = meta.get("env") or []
+    if not grants:
+        return None
+    import environment as env_mod
+    budget = None
+    prog = meta.get("prog")
+    if prog:
+        try:
+            _, seats_doc, _ = load_team(prog)
+            mins = ((seats_doc.get(meta["seat"]) or {}).get("budget") or {}).get("env_minutes")
+            if isinstance(mins, (int, float)) and not isinstance(mins, bool):
+                budget = float(mins) * 60
+        except (Void, OSError):
+            budget = None
+    return env_mod.Door(attempt, prog, grants, budget_secs=budget).start()
 
 
 def worker_argv(attempt, cmd, etc_dir, nproc=NPROC):
@@ -1450,6 +1491,8 @@ def worker_argv(attempt, cmd, etc_dir, nproc=NPROC):
                ("PYTHONNOUSERSITE", "1"),
                ("OPERATOR_PROGRAM", meta.get("prog") or "-"),
                ("OPERATOR_SEAT", meta["seat"]), ("OPERATOR_RUN", meta["id"]))
+    if meta.get("env"):
+        setenvs += (("OPERATOR_ENV_SOCKET", "/op-envd.sock"),)
     return (["prlimit", f"--fsize={FSIZE}", "--core=0"] +
             bwrap_args(binds=jail_binds_for(attempt, etc_dir), setenvs=setenvs,
                        chdir="/w/repo", etc=False) +
@@ -1917,6 +1960,7 @@ def cmd_adapter(attempt, timeout):
             raise Void(f"OPERATOR_CLI_DIR {cli_dir!r} carries no bin/")
         extra_binds += ["--ro-bind", cli_dir, "/opt/cli"]
         cli_bins = "/opt/cli/bin:"
+    door = env_door(attempt, meta)
     tmp = tempfile.mkdtemp(prefix="spawn-etc.")
     try:
         etc = generated_etc(tmp)
@@ -1925,6 +1969,8 @@ def cmd_adapter(attempt, timeout):
                    ("PYTHONNOUSERSITE", "1"),
                    ("OPERATOR_PROGRAM", meta.get("prog") or "-"),
                    ("OPERATOR_SEAT", meta["seat"]), ("OPERATOR_RUN", meta["id"])]
+        if door is not None:
+            setenvs.append(("OPERATOR_ENV_SOCKET", "/op-envd.sock"))
         adapter_e = adapter_env(attempt, manifest, broker_url)
         hook_log = adapter_hook_log(manifest)
         if hook_log:
@@ -1965,6 +2011,8 @@ def cmd_adapter(attempt, timeout):
                 _safe_write_file(attempt, os.path.join(attempt, "out", "report.json"),
                                  rdata, mode=0o600, binary=True)
     finally:
+        if door is not None:
+            door.close()
         shutil.rmtree(tmp, ignore_errors=True)
     meta["broker"] = broker_url
     meta["model"] = seat_model_of(attempt, manifest)
@@ -2055,6 +2103,7 @@ def adapter_of(attempt):
 
 
 def cmd_worker(attempt, timeout, cmd):
+    door = env_door(attempt, meta_load(attempt))
     tmp = tempfile.mkdtemp(prefix="spawn-etc.")
     try:
         state = supervise(worker_argv(attempt, cmd, generated_etc(tmp)), timeout,
@@ -2063,6 +2112,8 @@ def cmd_worker(attempt, timeout, cmd):
                           watch=os.path.dirname(attempt), parse=True, append=True,
                           record=os.path.join(attempt, "supervisor.json"))
     finally:
+        if door is not None:
+            door.close()
         shutil.rmtree(tmp, ignore_errors=True)
     print(f"rc={state['rc'] if state['rc'] is not None else 'killed'} "
           f"timed_out={int(state['timed_out'])} disk_stopped={int(state['disk_stopped'])} "
@@ -3070,6 +3121,61 @@ def selftest():
                   "C1a the DATA LAW rides the fenced brief too")
         finally:
             shutil.rmtree(adir_e9, ignore_errors=True)
+        # S-env a seat's environments (docs/charter.md): the grants ride the
+        # attempt's meta, every jail shape gets the socket and its client, the
+        # brief says where the door is, and a seat without grants gets none of it
+        prog_se = _program(home, "p-env", team_body='schema = 1\nname = "t"\nmax_parallel = 1\n'
+                           '[seat.w]\nrole = "roles/w.md"\nadapter = "stub"\nwrite = ["src/**"]\n'
+                           'env = ["tests"]\n')
+        with open(os.path.join(prog_se, "charter.toml"), "w") as f:
+            f.write('schema = 1\nname = "st"\n\n[[environment.tests]]\nimage = "sha256:' + "c" * 64
+                    + '"\nruntime = "docker"\nuser = "1000:1000"\n\n'
+                    '  [environment.tests.limits]\n  memory = "64m"\n  cpus = 1\n  pids = 16\n'
+                    '  wall = 300\n')
+        rd_se, _parent_se, _ = _world(home, "w-env", {"src/a.py": "v=1\n"})
+        adir_se = build_attempt(rd_se, "w", ["src/**"], "integration/R", "se-1", "r1", prog_se, ["w"])
+        etc_se = generated_etc(tempfile.mkdtemp(prefix="spawn-etc."))
+        try:
+            check(meta_load(adir_se).get("env") == ["tests"],
+                  "S-env the seat's environments ride the attempt's meta")
+            try:
+                jail_binds_for(adir_se, etc_se)
+                check(False, "S-env a jail was built without its door")
+            except Refused as e:
+                check("environment door isn't up" in str(e), f"S-env no door up, no jail: {e}")
+            door_se = env_door(adir_se, meta_load(adir_se))
+            sock_se = open(os.path.join(adir_se, "envd", "sock"), encoding="utf-8").read().strip()
+            check(door_se is not None and os.path.exists(sock_se)
+                  and os.path.isdir(os.path.join(adir_se, "envd", "work"))
+                  and len(sock_se.encode()) < 100,
+                  "S-env the door starts for a seat with grants, on a short path")
+            flat_se = jail_binds_for(adir_se, etc_se)
+            check(flat_se.count("/w/envwork") == 1 and flat_se.count("/op-envd.sock") == 1
+                  and "/engine/op-env.py" in flat_se and sock_se in flat_se,
+                  f"S-env every jail shape carries the socket and its client: {flat_se[-12:]}")
+            wav_se = worker_argv(adir_se, ["true"], etc_se)
+            check("OPERATOR_ENV_SOCKET" in wav_se and "/op-envd.sock" in wav_se,
+                  "S-env the worker's jail names the socket in its env")
+            with contextlib_redirect():
+                brief_se = compose_brief(adir_se)
+            bse = open(brief_se, encoding="utf-8").read()
+            check("op-env.py --env" in bse and "`tests`" in bse and "/w/envwork" in bse,
+                  f"S-env the brief says where the door is: {bse[-200:]!r}")
+            door_se.close()
+            check(not os.path.exists(sock_se), "S-env the door's socket goes with the turn")
+        finally:
+            shutil.rmtree(adir_se, ignore_errors=True)
+        prog_s0 = _program(home, "p-plain")
+        adir_s0 = build_attempt(rd_se, "w", ["src/**"], "integration/R", "s0-1", "r1", prog_s0, ["w"])
+        try:
+            flat_s0 = jail_binds_for(adir_s0, etc_se)
+            check(not any(x in flat_s0 for x in ("/w/envwork", "/op-envd.sock", "/engine/op-env.py"))
+                  and "OPERATOR_ENV_SOCKET" not in worker_argv(adir_s0, ["true"], etc_se)
+                  and env_door(adir_s0, meta_load(adir_s0)) is None,
+                  "S-env a seat without grants gets no socket, no client and no door")
+        finally:
+            shutil.rmtree(adir_s0, ignore_errors=True)
+            shutil.rmtree(os.path.dirname(etc_se), ignore_errors=True)
         # E8 a skill ROOT that is a symlink refuses at catalog and compose
         prog_l = _program(home, "p-skilllink", team_body='schema = 1\nname = "t"\n'
                           'max_parallel = 1\n[seat.w]\nrole = "roles/w.md"\n'
@@ -4757,6 +4863,88 @@ def first_level():
         worker(a, ["/bin/sh", "-c", "awk --version >/dev/null 2>&1; echo awk=$?"])
         t = out(a).strip().splitlines()
         check(t and t[-1] == "awk=0", "A alternatives resolve without the host's /etc")
+        # S-env (first level) the worker seam's own door: a seat with env grants
+        # gets the socket and the client in a real jail, the engine answers from
+        # outside it, and the turn's end takes the socket away. No container
+        # runtime is needed: the ask names an environment the seat was not granted
+        fl_prog_se = _program(base, "fl-env", team_body='schema = 1\nname = "t"\nmax_parallel = 1\n'
+                              '[seat.w]\nrole = "roles/w.md"\nadapter = "stub"\nwrite = ["src/**"]\n'
+                              'env = ["tests"]\n')
+        with open(os.path.join(fl_prog_se, "charter.toml"), "w") as f:
+            f.write('schema = 1\nname = "st"\n\n[[environment.tests]]\nimage = "sha256:' + "d" * 64
+                    + '"\nruntime = "docker"\nuser = "1000:1000"\n\n'
+                    '  [environment.tests.limits]\n  memory = "64m"\n  cpus = 1\n  pids = 16\n'
+                    '  wall = 300\n')
+        fl_rd_se, _, _ = _world(base, "fl-env-run", {"src/a.py": "v=1\n"})
+        a_se = build_attempt(fl_rd_se, "w", ["src/**"], "integration/R", "fl-se-1", "r1",
+                             fl_prog_se, ["w"])
+        with contextlib_redirect():
+            cmd_worker(a_se, 120, ["/bin/sh", "-c",
+                                   'test -S /op-envd.sock && echo SOCK; '
+                                   'test -f /engine/op-env.py && echo CLIENT; '
+                                   'echo "sock=$OPERATOR_ENV_SOCKET"; '
+                                   'test -w /w/envwork && echo STAGE; '
+                                   'python3 -I /engine/op-env.py --env nope -- true; echo ask=$?'])
+        t_se = " ".join(out(a_se).split())
+        e_se = " ".join(open(os.path.join(a_se, "transcript.err"), encoding="utf-8",
+                             errors="replace").read().split())
+        check("SOCK" in t_se and "CLIENT" in t_se and "sock=/op-envd.sock" in t_se
+              and "STAGE" in t_se and "ask=1" in t_se
+              and "isn't granted to this seat" in e_se and "granted here: tests" in e_se,
+              f"S-env a seat with grants gets the door in a real jail: out={t_se[-160:]!r} "
+              f"err={e_se[-200:]!r}")
+        check(not os.path.exists(open(os.path.join(a_se, "envd", "sock")).read().strip()),
+              "S-env the turn's end took the socket away")
+        shutil.rmtree(a_se, ignore_errors=True)
+        # S-env (adapter) an adapter turn on a seat with grants gets the same
+        # door: the client in the adapter's jail reaches the engine, and the
+        # turn's end closes it
+        old_se = {k: os.environ.get(k) for k in ("OPERATOR_ADAPTERS", "OPERATOR_BROKER",
+                                                 "OPERATOR_CREDENTIAL")}
+        ad_se = None
+        try:
+            fl_prog_sa = _program(home, "fl-env-ad", team_body='schema = 1\nname = "t"\nmax_parallel = 1\n'
+                                  '[seat.w]\nrole = "roles/w.md"\nadapter = "stub"\nwrite = ["src/**"]\n'
+                                  'env = ["tests"]\n')
+            with open(os.path.join(fl_prog_sa, "charter.toml"), "w") as f:
+                f.write('schema = 1\nname = "st"\n\n[[environment.tests]]\nimage = "sha256:' + "e" * 64
+                        + '"\nruntime = "docker"\nuser = "1000:1000"\n\n'
+                        '  [environment.tests.limits]\n  memory = "64m"\n  cpus = 1\n  pids = 16\n'
+                        '  wall = 300\n')
+            # the names are long on purpose: an attempt's path plus the socket's
+            # own name runs past AF_UNIX's 108 bytes, so the door has to keep
+            # the socket on a short path of its own
+            fl_rd_sa, _, _ = _world(home, "fl-env-ad-run-xxxxxxxxxxxxxxxxxxxxxx", {"src/a.py": "v=1\n"})
+            ad_se = build_attempt(fl_rd_sa, "w", ["src/**"], "integration/R",
+                                  "fl-ad-1-xxxxxxxxxxxxxxxxxxxxxxxx", "r1", fl_prog_sa, ["w"])
+            os.makedirs(os.path.join(ad_se, "compiled"), exist_ok=True)
+            with open(os.path.join(ad_se, "stub.toml"), "w") as f:
+                f.write('schema = 2\nname = "stub"\nversion_tested = "0"\n'
+                        "argv = [\"python3\", \"-c\", "
+                        "\"import subprocess,sys\\n"
+                        "r = subprocess.run([sys.executable,'-I','/engine/op-env.py','--env','nope',"
+                        "'--','true'], capture_output=True, text=True)\\n"
+                        "open('/w/out/door.txt','w').write('rc=%d here=%s' % (r.returncode, "
+                        "'granted here: tests' in r.stderr))\\n\"]\n")
+            os.environ.update({"OPERATOR_ADAPTERS": ad_se,
+                               "OPERATOR_BROKER": os.path.join(rd, "broker-test.sock"),
+                               "OPERATOR_CREDENTIAL": "fixture-key"})
+            with contextlib_redirect():
+                cmd_adapter(ad_se, 120)
+            dpath = os.path.join(ad_se, "out", "door.txt")
+            dtxt = open(dpath).read() if os.path.exists(dpath) else ""
+            check("rc=1 here=True" in dtxt,
+                  f"S-env (adapter) an adapter turn gets the door too: {dtxt!r}")
+            check(not os.path.exists(open(os.path.join(ad_se, "envd", "sock")).read().strip()),
+                  "S-env (adapter) the turn's end closed the door")
+        finally:
+            for k, v in old_se.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+            if ad_se:
+                shutil.rmtree(ad_se, ignore_errors=True)
 
         # B the stream law: /proc writes land in the transcript, nowhere else
         worker(a, ["/bin/sh", "-c",
