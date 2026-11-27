@@ -36,6 +36,7 @@ bin/check.py
 bin/compose-fence.py
 bin/contract.py
 bin/demo.py
+bin/derive.py
 bin/egress-proxy.py
 bin/environment.py
 bin/fixtures.py

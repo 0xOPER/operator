@@ -51,6 +51,7 @@ SP = "bin/spawn.py"
 SPF = "bin/spawn.py --first-level"
 EN = "bin/environment.py"
 RC = "bin/reach.py"
+DV = "bin/derive.py"
 RN = "bin/run.py"
 JL = "bin/lib/jail.py"
 WJ = "test/wave-job.sh"
@@ -1825,4 +1826,35 @@ NEUTERS = [
     ("PX-secret-shape", EP,
      '    if SECRET_SHAPE.search(head):',
      '    if False and SECRET_SHAPE.search(head):'),
+
+    # --- derive (M3): a baseline found in the tree, its rows pinned to what they read,
+    # and a pin that reports the known red without filing it ---
+    ('DV-pytest-cfg', 'bin/derive.py',
+     '        if cfg or "[tool.pytest" in pyproject:',
+     '        if False:',
+     'bin/derive.py --selftest'),
+    ('DV-oracle', 'bin/derive.py',
+     '                          "oracle": oracle, "what": "the pytest suite"})',
+     '                          "oracle": [], "what": "the pytest suite"})',
+     'bin/derive.py --selftest'),
+    ('DV-lock', 'bin/derive.py',
+     '                                  "oracle": ["package.json"] + lock, "what": f"the package\'s {s} script"})',
+     '                                  "oracle": ["package.json"], "what": f"the package\'s {s} script"})',
+     'bin/derive.py --selftest'),
+    ('DV-scripts-shape', 'bin/derive.py',
+     '                if isinstance(scripts.get(s), str) and scripts[s].strip():',
+     '                if True:',
+     'bin/derive.py --selftest'),
+    ('DV-make-target', 'bin/derive.py',
+     '        for t in MAKE_TARGETS:\n            if t in targets:',
+     '        for t in MAKE_TARGETS:\n            if True:',
+     'bin/derive.py --selftest'),
+    ('DV-known-red', 'bin/derive.py',
+     '                out.append({"id": rid, "rc": rc, "known_red": rc != 0})',
+     '                out.append({"id": rid, "rc": rc, "known_red": False})',
+     'bin/derive.py --first-level'),
+    ('DV-pin-no-record', 'bin/derive.py',
+     '                                                           "derive", record_log=False)',
+     '                                                           "derive", record_log=True)',
+     'bin/derive.py --first-level'),
 ]

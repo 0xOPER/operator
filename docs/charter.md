@@ -305,7 +305,10 @@ More power to act needs stronger evidence law, not weaker.
 - **Derived baseline.** `operator derive <repo>` finds the runners, linters,
   type checks and build, and writes sealed rows over them. Rows already red at
   the pin become the known-red baseline, shown in the digest; done means no
-  new red.
+  new red. Built (first slice): pytest, unittest, Makefile targets,
+  package.json scripts, cargo and go are found and their rows sealed; the pin
+  reports the red ones and files nothing. Open: linters and type checks as
+  their own rows, and the baseline in the run's digest.
 - **Labels, not refusals, for weakness.** Every row the manager adds runs once
   against a hollow twin of the candidate (same paths, emptied bodies). A row
   that stays green is labelled `reviewed-only`.
@@ -324,7 +327,7 @@ More power to act needs stronger evidence law, not weaker.
 - **Templates ship checks that can fail.** The starter's `docs` row goes green
   on a four-byte file; it is replaced.
 
-All of this section is M3.
+The rest of this section is M3, not built.
 
 ## 9. Default charters
 
@@ -434,7 +437,7 @@ each row by delegation.
 | M0 | Charter law | the signed plan | this document |
 | M1 | Environments | container and GPU work | built: the charter, the door, `env` rows, the worker socket. The exit is the parked program's two rows closing as machine rows |
 | M2 | Reach | network, shell, read | first slice built: a seat's network from the charter, through the egress proxy. Open: the `declared` rule, `net.allow`, the credential refusal, `shell` and `read` |
-| M3 | Evidence | contract authoring as a precondition | open |
+| M3 | Evidence | contract authoring as a precondition | first slice built: `operator derive`. Open: the hollow twin and the `reviewed-only` label, the lint against existence-class anchors, `min_mutation_kill`, the evidence mix, the templates |
 | M4 | The manager | triage seat becomes executive | open |
 | M5 | Enclose | external orchestrators as workers or managers | open, gated on probes |
 | M6 | Scale and prove | serial dispatch; the claim | open |

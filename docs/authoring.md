@@ -268,6 +268,25 @@ naming an earlier candidate -- certifies nothing and refuses by name. Red
 refuses with the attempt standing as evidence; `--changes` re-dispatches with
 the prior round riding the next pack.
 
+### A derived baseline
+
+`bin/operator.sh derive rows <work-repo> --seat <seat> --reviewer <seat>` reads
+the tree at a commit (no checkout) and writes contract rows for the runners it
+knows: pytest and unittest, the `test`, `check` and `lint` targets of a
+Makefile, the `test`, `lint` and `typecheck` scripts of a `package.json`,
+cargo and go. Each row's oracle pins what the runner reads (the test
+directory, the config, the lockfile), so a worker cannot weaken the check it
+is held to. `--at <commit>` reads that commit. Paste the rows into
+`contract.toml` and sign.
+
+`derive pin <program-dir> <run-parent> --at <commit>` runs every derived row
+once at the commit, through the check jail, and says which are red there: that
+is the known-red baseline, and done then means no new red. The pin reports and
+files nothing.
+
+A derived row is a starting point. One that needs what the jail does not have
+(an installed tree, a toolchain) is red at the pin and says so.
+
 ### Templates and state
 
 `bin/operator.sh init <dir> --template <name>` ships three starter templates
